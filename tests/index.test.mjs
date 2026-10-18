@@ -1,6 +1,6 @@
 /**
  * 关键词索引 + 三级触发检索 + 长文档不丢内容 的回归测试。
- * DSH_HOME=/tmp/sbk-index node /root/sbk-index.mjs
+ * 运行：node tests/index.test.mjs
  */
 import http from 'node:http';
 import { rm } from 'node:fs/promises';
@@ -62,7 +62,7 @@ async function* fakeStream(options) {
   yield { type: 'finish', reason: { kind: 'stop' } };
 }
 
-const { apply } = await import('/root/dsh-storybook/index.js');
+const { apply } = await import(new URL('../index.js', import.meta.url).href);
 apply(ctx);
 const server = http.createServer((req, res) => routes[0].handler(req, res));
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

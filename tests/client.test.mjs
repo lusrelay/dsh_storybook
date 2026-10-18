@@ -24,7 +24,7 @@ globalThis.window = { __ModuleLoader__: { load: ({ id, factory }) => { captured 
   throw new Error(`unexpected require: ${name}`);
 }) }; } } };
 
-let source = await readFile('/root/dsh-storybook/client.js', 'utf8');
+let source = await readFile(new URL('../client.js', import.meta.url), 'utf8');
 source = source.replace(
   "    return {\n      inject: ['slots', 'locale'],",
   "    globalThis.__SBK__ = { StorybookPage, ModulePanel, CraftPanel, ChatPanel, ModeStart, Reply, StatusGrid, Hints, StorybookIcon };\n    return {\n      inject: ['slots', 'locale'],",
