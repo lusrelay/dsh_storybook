@@ -7,7 +7,7 @@
  *  - 通过 ctx.llm 调用当前默认模型：时间线自动整理、资料格式化入库、故事/游戏双模式对话；
  *  - 通过 ctx.webServer 暴露 /storybook/api，供浏览器半身调用。
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -15,7 +15,7 @@ import { homedir } from 'node:os';
 export const inject = ['webServer'];
 
 const API_PREFIX = '/storybook';
-const BUILD = '1.1.0';
+const BUILD = '1.2.0';
 const MODULE_KEYS = ['basic', 'world', 'character', 'timeline', 'craft'];
 const MODULE_LABEL = {
   basic: '基础设定',
@@ -138,7 +138,8 @@ function normalizeBook(raw) {
   }
   book.chat = book.chat && typeof book.chat === 'object' ? book.chat : { messages: [] };
   book.chat.messages = Array.isArray(book.chat.messages) ? book.chat.messages : [];
-  book.settings = { styleHint: '', autoMemory: true, knowledgeBudget: 12000, residentBudget: 2600, retrievalBudget: 4200, retrievalLimit: 10, maxEntriesPerConvert: 400, ...(book.settings || {}) };
+  book.settings = { styleHint: '', autoMemory: true, knowledgeBudget: 12000, residentBudget: 2600, retrievalBudget: 4200, retrievalLimit: 10, maxEntriesPerConvert: 400, timelineMode: 'manual', ...(book.settings || {}) };
+  book.timelineMeta = { syncedAt: 0, sourceHash: '', strategy: 'append', added: 0, chunks: 0, ...(book.timelineMeta || {}) };
   book.player = { name: '', desc: '', ...(book.player || {}) };
   book.gameState = { time: '', location: '', status: [], ...(book.gameState || {}) };
   if (!Array.isArray(book.gameState.status)) book.gameState.status = [];
@@ -714,6 +715,39 @@ function craftPrompt(target, part, index, total) {
   ].filter(Boolean).join('\n');
 }
 
+/* ------------------------------------------------------------- 时间线状态 */
+
+function timelineSourceHash(book) {
+  const hash = createHash('sha1');
+  for (const entry of book.modules.world.entries) {
+    hash.update(`w|${entry.id}|${entry.updatedAt}|${entry.title}|${entry.content}\n`);
+  }
+  for (const entry of book.modules.character.entries) {
+    hash.update(`c|${entry.id}|${entry.updatedAt}|${entry.title}|${entry.content}\n`);
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+
+function timelineStatus(book) {
+  const sourceHash = timelineSourceHash(book);
+  const meta = book.timelineMeta || {};
+  const timeline = book.modules.timeline.entries;
+  return {
+    mode: book.settings.timelineMode === 'auto' ? 'auto' : 'manual',
+    stale: !meta.syncedAt || meta.sourceHash !== sourceHash,
+    syncedAt: meta.syncedAt || 0,
+    meta: { strategy: meta.strategy || 'append', added: meta.added || 0, chunks: meta.chunks || 0 },
+    counts: {
+      world: book.modules.world.entries.length,
+      character: book.modules.character.entries.length,
+      events: timeline.filter((entry) => entry.kind === 'event').length,
+      aiEvents: timeline.filter((entry) => entry.kind === 'event' && entry.source === 'ai').length,
+      manualEvents: timeline.filter((entry) => entry.kind === 'event' && entry.source !== 'ai').length,
+      memories: timeline.filter((entry) => entry.kind === 'memory' || entry.kind === 'chapter').length,
+    },
+  };
+}
+
 /* --------------------------------------------------------------- 提示词 */
 
 function personaBlock(book) {
@@ -982,6 +1016,9 @@ export function apply(ctx) {
         if (Number.isFinite(patch.settings.maxEntriesPerConvert)) {
           book.settings.maxEntriesPerConvert = Math.min(2000, Math.max(40, Math.round(patch.settings.maxEntriesPerConvert)));
         }
+        if (patch.settings.timelineMode === 'auto' || patch.settings.timelineMode === 'manual') {
+          book.settings.timelineMode = patch.settings.timelineMode;
+        }
       }
       if (patch.player && typeof patch.player === 'object') {
         if (typeof patch.player.name === 'string') book.player.name = cleanText(patch.player.name, 40).trim();
@@ -1095,19 +1132,36 @@ export function apply(ctx) {
       return { book, added };
     },
 
+    async 'timeline/status'(payload) {
+      const book = await loadBook(payload.bookId);
+      return { status: timelineStatus(book) };
+    },
+
     async 'timeline/build'(payload) {
       const book = await loadBook(payload.bookId);
-      const world = book.modules.world.entries.map((entry) => entryText(entry)).join('\n\n');
-      const characters = book.modules.character.entries.map((entry) => entryText(entry)).join('\n\n');
-      if (!world.trim() && !characters.trim()) throw new Error('世界观与角色模块都还是空的，先补充资料再整理时间线');
-      const source = [world ? `【世界观】\n${world}` : '', characters ? `【角色】\n${characters}` : ''].filter(Boolean).join('\n\n');
+      const strategy = payload.strategy === 'replace' ? 'replace' : 'append';
+      const worldText = book.modules.world.entries.map((entry) => entryText(entry)).join('\n\n');
+      const characterText = book.modules.character.entries.map((entry) => entryText(entry)).join('\n\n');
+      if (!worldText.trim() && !characterText.trim()) {
+        throw new Error('世界观与角色模块都还是空的，先补充资料再整理时间线');
+      }
+      const source = [worldText ? `【世界观】\n${worldText}` : '', characterText ? `【角色】\n${characterText}` : '']
+        .filter(Boolean).join('\n\n');
       const chunks = splitSource(source, 9000);
       const items = [];
       const warnings = [];
+      const existingEvents = book.modules.timeline.entries
+        .filter((entry) => entry.kind === 'event')
+        .slice(-40)
+        .map((entry) => `- ${entry.at ? `${entry.at} ` : ''}${entry.title}`);
+      const avoidBlock = strategy === 'append' && existingEvents.length
+        ? `【时间线中已有的事件，不要重复输出】\n${existingEvents.join('\n')}`
+        : '';
 
       for (let index = 0; index < chunks.length; index += 1) {
         const prompt = [
           `请从下面的设定资料（第 ${index + 1}/${chunks.length} 部分）中提取故事时间线（历史事件与当前局势），按故事内时间先后排列。`,
+          avoidBlock,
           '',
           chunks[index],
           '',
@@ -1138,17 +1192,45 @@ export function apply(ctx) {
       }
 
       if (!items.length) throw new Error(`没有提取出时间线事件${warnings.length ? `：${warnings.join('；')}` : ''}`);
+
+      const removed = [];
+      if (strategy === 'replace') {
+        const kept = [];
+        for (const entry of book.modules.timeline.entries) {
+          if (entry.kind === 'event' && entry.source === 'ai') removed.push(entry);
+          else kept.push(entry);
+        }
+        book.modules.timeline.entries = kept;
+      }
+
       const list = book.modules.timeline.entries;
       const created = [];
       for (const item of items) {
         if (!item.title && !item.content) continue;
         if (list.some((entry) => entry.title === item.title && entry.content === item.content)) continue;
         const entry = makeEntry('timeline', { ...item, kind: 'event', source: 'ai' }, 'ai');
+        entry.timelineOrder = created.length;
         list.push(entry);
         created.push(entry);
       }
+
+      book.timelineMeta = {
+        syncedAt: now(),
+        sourceHash: timelineSourceHash(book),
+        strategy,
+        added: created.length,
+        chunks: chunks.length,
+      };
       await saveBook(book);
-      return { book, added: created.length, chunks: chunks.length, warnings };
+      return {
+        book,
+        added: created.length,
+        removed: removed.length,
+        chunks: chunks.length,
+        strategy,
+        warnings,
+        status: timelineStatus(book),
+      };
     },
 
     async 'craft/convert'(payload) {

@@ -87,6 +87,22 @@ window.__ModuleLoader__.load({
 .sbk-kws{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
 .sbk-kw{font-size:10.5px;line-height:16px;padding:0 6px;border-radius:8px;border:.5px solid var(--sbk-line);color:var(--sbk-faint);white-space:nowrap}
 .sbk-kw--pin{color:var(--sbk-accent);border-color:color-mix(in srgb,var(--sbk-accent) 45%,transparent)}
+.sbk-tlmode{display:flex;align-items:center;gap:8px;padding:0 12px 8px}
+.sbk-seg{display:inline-flex;background:var(--sbk-card);border-radius:10px;padding:2px}
+.sbk-seg-btn{height:24px;padding:0 10px;border:0;background:transparent;color:var(--sbk-dim);font:inherit;font-size:12px;border-radius:8px;cursor:pointer;white-space:nowrap}
+.sbk-seg-btn[data-active=true]{background:var(--dsw-alias-bg-base,#fff);color:var(--sbk-text);box-shadow:0 1px 2px rgba(0,0,0,.14)}
+.sbk-auto{flex:1;min-height:0;overflow:auto;padding:20px clamp(12px,2.4vw,24px) 32px;scrollbar-width:thin}
+.sbk-auto-head{display:flex;gap:10px;align-items:flex-start;margin-bottom:12px}
+.sbk-auto-head h3{margin:0 0 4px;font-size:14.5px;font-weight:600}
+.sbk-auto-head p{margin:0}
+.sbk-auto-meta{display:flex;flex-direction:column;gap:5px;font-size:12px;line-height:1.6;color:var(--sbk-dim);padding:10px 12px;border:.5px solid var(--sbk-line);border-radius:12px;background:var(--sbk-card)}
+.sbk-warn{color:var(--sbk-warn,#c27c0e)}
+.sbk-auto-strategy{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:14px}
+.sbk-choice{display:flex;flex-direction:column;gap:3px;text-align:left;border:.5px solid var(--sbk-line-strong);border-radius:12px;background:transparent;color:inherit;font:inherit;padding:8px 12px;cursor:pointer;min-width:148px;max-width:260px}
+.sbk-choice b{font-size:13px;font-weight:600}
+.sbk-choice span{font-size:11.5px;color:var(--sbk-faint);line-height:1.5}
+.sbk-choice[data-active=true]{border-color:var(--sbk-accent);background:color-mix(in srgb,var(--sbk-accent) 7%,transparent)}
+.sbk-choice:disabled{opacity:.5;cursor:default}
 .sbk-ctx{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;margin-top:10px;padding-top:8px;border-top:.5px dashed var(--sbk-line);font-size:11.5px;color:var(--sbk-faint)}
 .sbk-ctx b{font-weight:500;color:var(--sbk-dim)}
 .sbk-list-foot{flex:none;padding:8px 12px 12px;border-top:.5px solid var(--sbk-line);display:flex;gap:6px;flex-wrap:wrap}
@@ -278,6 +294,8 @@ window.__ModuleLoader__.load({
       const [selectedId, setSelectedId] = useState(null);
       const [draft, setDraft] = useState(null);
       const [query, setQuery] = useState('');
+      const [timelineStatus, setTimelineStatus] = useState(null);
+      const [strategy, setStrategy] = useState('append');
       const fileRef = useRef(null);
       const meta = MODULES.find((item) => item.key === module);
       const entries = book.modules[module].entries;
@@ -287,6 +305,30 @@ window.__ModuleLoader__.load({
         setDraft(null);
         setQuery('');
       }, [module, book.id]);
+
+      const timelineMode = book.settings?.timelineMode === 'auto' ? 'auto' : 'manual';
+      const refreshTimelineStatus = async () => {
+        try {
+          const data = await request('timeline/status', { bookId: book.id });
+          setTimelineStatus(data.status);
+        } catch {
+          /* 状态拉取失败不影响编辑 */
+        }
+      };
+
+      useEffect(() => {
+        if (module !== 'timeline') return undefined;
+        let alive = true;
+        request('timeline/status', { bookId: book.id })
+          .then((data) => { if (alive) setTimelineStatus(data.status); })
+          .catch(() => {});
+        return () => { alive = false; };
+      }, [module, book.id, book.updatedAt]);
+
+      const switchTimelineMode = async (next) => {
+        if (next === timelineMode) return;
+        await run('book/update', { bookId: book.id, patch: { settings: { timelineMode: next } } }, '切换填写方式…');
+      };
 
       const filtered = entries.filter((entry) => {
         const text = `${entry.title}\n${entry.content}`.toLowerCase();
@@ -377,8 +419,13 @@ window.__ModuleLoader__.load({
       };
 
       const buildTimeline = async () => {
-        const result = await run('timeline/build', { bookId: book.id }, '正在根据世界观与角色整理时间线…');
-        if (result) toast(result.added > 0 ? `时间线已整理：新增 ${result.added} 条事件` : '没有发现新的时间线事件');
+        const result = await run('timeline/build', { bookId: book.id, strategy }, '正在读取世界观与角色，整理时间线…');
+        if (!result) return;
+        if (result.status) setTimelineStatus(result.status);
+        const parts = [];
+        if (result.added) parts.push(`新增 ${result.added} 条`);
+        if (result.removed) parts.push(`替换 ${result.removed} 条旧事件`);
+        toast(parts.length ? `时间线已更新：${parts.join('，')}（${result.chunks} 段）` : '没有发现新的时间线事件');
       };
 
       const totalChars = entries.reduce((sum, entry) => sum + countChars(entry.content), 0);
@@ -394,6 +441,22 @@ window.__ModuleLoader__.load({
               onChange: (event) => setQuery(event.target.value),
             }),
             h(Btn, { size: 'sm', onClick: startNew, disabled: busy }, '新增')),
+          module === 'timeline'
+            ? h('div', { className: 'sbk-tlmode' },
+              h('div', { className: 'sbk-seg' },
+                [{ key: 'manual', label: '手动填写' }, { key: 'auto', label: '自动生成' }].map((item) => h('button', {
+                  key: item.key,
+                  type: 'button',
+                  className: 'sbk-seg-btn',
+                  'data-active': timelineMode === item.key,
+                  disabled: busy,
+                  onClick: () => switchTimelineMode(item.key),
+                }, item.label))),
+              h('span', { className: 'sbk-notice' },
+                timelineStatus?.stale
+                  ? (timelineStatus.syncedAt ? '⚠ 设定有更新' : '未同步')
+                  : (timelineStatus?.syncedAt ? '已同步' : '')))
+            : null,
           h('div', { className: 'sbk-list-body' },
             filtered.length === 0
               ? h('div', { className: 'sbk-empty', style: { padding: '28px 12px' } },
@@ -433,7 +496,17 @@ window.__ModuleLoader__.load({
             }),
             h('span', { className: 'sbk-notice' }, `${entries.length} 条 · ${totalChars} 字 · 关键词 ${withKeywords}/${entries.length}`))),
         h('section', { className: 'sbk-editor' },
-          !draft
+          !draft && module === 'timeline' && timelineMode === 'auto'
+            ? h(AutoTimeline, {
+              status: timelineStatus,
+              busy,
+              strategy,
+              setStrategy,
+              onGenerate: buildTimeline,
+              onManual: () => switchTimelineMode('manual'),
+              onRefresh: refreshTimelineStatus,
+            })
+            : !draft
             ? h('div', { className: 'sbk-empty' },
               h('div', { className: 'sbk-empty-glyph' }, meta.glyph),
               h('b', null, meta.label),
@@ -595,6 +668,45 @@ window.__ModuleLoader__.load({
     }
 
     /* ---------------------------------------------------------- 对话面板 */
+
+    function AutoTimeline({ status, busy, strategy, setStrategy, onGenerate, onManual, onRefresh }) {
+      const syncedAt = status?.syncedAt
+        ? new Date(status.syncedAt).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+        : '';
+      return h('div', { className: 'sbk-auto' },
+        h('div', { className: 'sbk-auto-head' },
+          h('div', null,
+            h('h3', null, '🤖 自动整理时间线'),
+            h('p', { className: 'sbk-hint' }, '读取「世界观 + 角色」的设定，提取历史事件与当前局势，按故事内时间排序写入时间线。')),
+          h('span', { className: 'sbk-spacer' }),
+          h(Btn, { size: 'sm', variant: 'ghost', onClick: onManual, disabled: busy }, '改用手动填写')),
+        h('div', { className: 'sbk-auto-meta' },
+          h('span', null, `来源：世界观 ${status?.counts?.world ?? 0} 条 · 角色 ${status?.counts?.character ?? 0} 条`),
+          h('span', null, `已有事件 ${status?.counts?.events ?? 0} 条（AI ${status?.counts?.aiEvents ?? 0} / 手动 ${status?.counts?.manualEvents ?? 0}）· 记忆 ${status?.counts?.memories ?? 0} 条`),
+          syncedAt
+            ? h('span', null, `上次整理：${syncedAt}，${status.meta.strategy === 'replace' ? '覆盖' : '追加'} ${status.meta.added} 条（${status.meta.chunks} 段）`)
+            : h('span', null, '还没有自动生成过时间线'),
+          status?.stale && status?.syncedAt
+            ? h('span', { className: 'sbk-warn' }, '⚠ 世界观或角色在上次整理后有改动，建议重新整理')
+            : null),
+        h('div', { className: 'sbk-auto-strategy' },
+          h('span', { className: 'sbk-label' }, '处理方式'),
+          [
+            { key: 'append', label: '追加', hint: '保留现有条目，只补新事件' },
+            { key: 'replace', label: '覆盖', hint: '先删上次 AI 生成的事件再重建，手动条目与对话记忆保留' },
+          ].map((item) => h('button', {
+            key: item.key,
+            type: 'button',
+            className: 'sbk-choice',
+            'data-active': strategy === item.key,
+            disabled: busy,
+            onClick: () => setStrategy(item.key),
+          }, h('b', null, item.label), h('span', null, item.hint)))),
+        h('div', { className: 'sbk-inline', style: { marginTop: 14 } },
+          h(Btn, { variant: 'primary', onClick: onGenerate, disabled: busy }, '✧ 立即整理'),
+          h(Btn, { variant: 'ghost', size: 'sm', onClick: onRefresh, disabled: busy }, '刷新状态'),
+          h('span', { className: 'sbk-notice' }, '手动条目与对话沉淀的记忆不会被覆盖')));
+    }
 
     function StatusGrid({ rows }) {
       if (!rows || rows.length === 0) return null;
