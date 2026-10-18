@@ -1,0 +1,5 @@
+# 故事工坊 bundle patch：一行 plugin。Host 半身负责数据与模型调用，
+# 浏览器半身（package.json dsh.client）负责「故事工坊」整页 UI。
+- insert:
+    - id: storybook
+      name: '@local/dsh-storybook'
