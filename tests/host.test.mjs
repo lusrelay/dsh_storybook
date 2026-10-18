@@ -1,6 +1,6 @@
 /**
  * 故事工坊 Host 半身离线自测：桩掉 llm，用真实路由跑完整业务流程。
- * 运行：DSH_HOME=/tmp/sbk-test node /root/sbk-test.mjs
+ * 运行：node tests/host.test.mjs
  */
 import http from 'node:http';
 import { rm, readFile } from 'node:fs/promises';
@@ -91,7 +91,7 @@ async function* fakeStream(options) {
   yield { type: 'finish', reason: { kind: 'stop' } };
 }
 
-const { apply } = await import('/root/dsh-storybook/index.js');
+const { apply } = await import(new URL('../index.js', import.meta.url).href);
 apply(ctx);
 
 const route = routes[0];

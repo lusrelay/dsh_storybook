@@ -17,5 +17,5 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: 语法检查
         run: npm run check
-      - name: 用例（Host / 容错 / 索引 / 前端渲染）
+      - name: 用例（Host / 容错 / 索引 / 时间线 / 多对话 / 前端渲染）
         run: npm test
