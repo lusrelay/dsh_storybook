@@ -2,6 +2,16 @@
   "name": "@local/dsh-storybook",
   "version": "1.1.0",
   "description": "酒馆式故事工坊：多故事书隔离、模块化知识库、关键词三级检索、故事/游戏双模式对话",
+  "author": "lusrelay",
+  "license": "MIT",
+  "homepage": "https://github.com/lusrelay/dsh_storybook#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lusrelay/dsh_storybook.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lusrelay/dsh_storybook/issues"
+  },
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -38,7 +48,6 @@
   "engines": {
     "node": ">=20"
   },
-  "license": "MIT",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

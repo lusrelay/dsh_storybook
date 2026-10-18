@@ -2,6 +2,8 @@
 
 **更简单的 AI 小说互动工具** —— 装进 DSH Web UI 的故事工坊。
 
+仓库：<https://github.com/lusrelay/dsh_storybook> · CI：[![CI](https://github.com/lusrelay/dsh_storybook/actions/workflows/ci.yml/badge.svg)](https://github.com/lusrelay/dsh_storybook/actions/workflows/ci.yml)
+
 一个装在 DSH Web UI 里的「酒馆式」故事创作插件：每本故事书拥有彼此隔离的六大模块，
 模块内容自动成为对话的知识库，并用当前默认模型完成时间线整理、资料格式化与双模式叙事。
 
