@@ -8,7 +8,14 @@ import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
+
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sbk-tl-'));
+
+// 安全护栏：只允许在临时目录下建/删测试数据，绝不碰真实 $DSH_HOME
+const TEST_HOME = process.env.DSH_HOME;
+if (!TEST_HOME || !TEST_HOME.startsWith(tmpdir())) {
+  throw new Error('测试必须在临时 DSH_HOME 下运行，拒绝操作真实数据目录');
+}
 
 const routes = [];
 const ctx = {
