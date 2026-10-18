@@ -1,6 +1,6 @@
 /**
  * 故事工坊 Host 半身离线自测：桩掉 llm，用真实路由跑完整业务流程。
- * 运行：node tests/host.test.mjs（自行创建临时 DSH_HOME）
+ * 运行：DSH_HOME=/tmp/sbk-test node /root/sbk-test.mjs
  */
 import http from 'node:http';
 import { rm, readFile } from 'node:fs/promises';
@@ -8,11 +8,7 @@ import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
-
-// 每个测试用独立临时目录，CI 里不需要预置环境变量。
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sbk-host-'));
-
-// 安全护栏：只允许在临时目录下建/删测试数据，绝不碰真实 $DSH_HOME
 const TEST_HOME = process.env.DSH_HOME;
 if (!TEST_HOME || !TEST_HOME.startsWith(tmpdir())) {
   throw new Error('测试必须在临时 DSH_HOME 下运行，拒绝操作真实数据目录');
@@ -95,7 +91,7 @@ async function* fakeStream(options) {
   yield { type: 'finish', reason: { kind: 'stop' } };
 }
 
-const { apply } = await import(new URL('../index.js', import.meta.url).href);
+const { apply } = await import('/root/dsh-storybook/index.js');
 apply(ctx);
 
 const route = routes[0];
@@ -152,6 +148,7 @@ console.log('\n[3] 故事书隔离');
 r = await api('book/create', { title: '星轨往事' });
 const bookB = r.book;
 await api('entry/save', { bookId: bookB.id, module: 'basic', entry: { title: '只有B有', content: '星轨列车时刻表。' } });
+const convOf = (book) => book.conversations.find((item) => item.id === book.activeConversationId) || book.conversations[0];
 const fullA = (await api('book', { id: bookA.id })).book;
 const fullB = (await api('book', { id: bookB.id })).book;
 check('A 看不到 B 的条目', !fullA.modules.basic.entries.some((entry) => entry.title === '只有B有'));
@@ -175,19 +172,19 @@ check('未选模式报错', r.status === 400 && /模式/.test(r.error || ''), r)
 
 console.log('\n[7] 故事模式');
 r = await api('chat/start', { bookId: bookA.id, mode: 'story', styleHint: '阴冷' });
-check('进入故事模式', r.book.mode === 'story');
+check('进入故事模式', convOf(r.book).mode === 'story', convOf(r.book).mode);
 r = await api('chat/send', { bookId: bookA.id, message: '写一个雨夜来客' });
 const storyMsg = r.message;
 check('回复解析出章节名', storyMsg?.parsed?.chapterTitle === '第1章 雨夜的来客', storyMsg?.parsed);
 check('正文非空', (storyMsg?.parsed?.body || '').length > 20);
 check('后续发展提示 3 条', storyMsg?.parsed?.hints.length === 3, storyMsg?.parsed?.hints);
-check('章节号自增到 2', r.book.chapterIndex === 2, r.book.chapterIndex);
+check('章节号自增到 2', convOf(r.book).chapterIndex === 2, convOf(r.book).chapterIndex);
 check('自动沉淀章节记忆到时间线', r.book.modules.timeline.entries.some((entry) => entry.kind === 'chapter'));
 check('记忆条数与返回值一致', r.memoryAdded === 1, r.memoryAdded);
 
 console.log('\n[8] 游戏模式');
 r = await api('chat/mode', { bookId: bookA.id, mode: 'game' });
-check('切换游戏模式并清空对话', r.book.mode === 'game' && r.book.chat.messages.length === 0);
+check('切换游戏模式并清空对话', convOf(r.book).mode === 'game' && convOf(r.book).messages.length === 0);
 r = await api('chat/start', { bookId: bookA.id, mode: 'game', playerName: '顾青梧', playerDesc: '落魄剑客，左臂有旧伤' });
 check('玩家写入角色模块', r.book.modules.character.entries.some((entry) => entry.kind === 'player' && entry.title.includes('顾青梧')));
 r = await api('chat/send', { bookId: bookA.id, message: '推开酒馆的门' });
@@ -196,7 +193,7 @@ check('解析游戏内时间', gameMsg?.parsed?.time === '第1天 黄昏', gameM
 check('解析状态栏 7 行', gameMsg?.parsed?.status.length === 7, gameMsg?.parsed?.status);
 check('解析记忆库 2 条', gameMsg?.parsed?.memory.length === 2, gameMsg?.parsed?.memory);
 check('记忆库进入时间线', r.book.modules.timeline.entries.filter((entry) => entry.kind === 'memory').length === 2);
-check('游戏状态被记住', r.book.gameState.time === '第1天 黄昏' && r.book.gameState.location.includes('酒馆'), r.book.gameState);
+check('游戏状态被记住', convOf(r.book).gameState.time === '第1天 黄昏' && convOf(r.book).gameState.location.includes('酒馆'), convOf(r.book).gameState);
 
 console.log('\n[9] 重命名 / 设置 / 清空 / 删除');
 r = await api('book/rename', { id: bookB.id, title: '星轨往事·改' });
@@ -204,7 +201,7 @@ check('重命名生效', r.book.title === '星轨往事·改');
 r = await api('book/update', { bookId: bookA.id, patch: { settings: { autoMemory: false, knowledgeBudget: 5000 } } });
 check('设置保存', r.book.settings.autoMemory === false && r.book.settings.knowledgeBudget === 5000);
 r = await api('chat/reset', { bookId: bookA.id });
-check('清空对话但保留知识', r.book.chat.messages.length === 0 && r.book.modules.character.entries.length > 0);
+check('清空对话但保留知识', convOf(r.book).messages.length === 0 && r.book.modules.character.entries.length > 0);
 r = await api('book/delete', { id: bookB.id });
 check('删除后只剩一本', r.books.length === 1, r.books);
 

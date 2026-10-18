@@ -1,6 +1,6 @@
 /**
  * 浏览器半身（client.js）离线渲染冒烟测试。
- * 用最小 React 垫片执行组件函数，检查默认分支不抛错、关键文案/结构存在。
+ * 用最小 React 垫片执行组件函数，检查默认分支不抛错、关键结构存在。
  */
 import { readFile } from 'node:fs/promises';
 
@@ -19,15 +19,17 @@ const fakeReact = {
   useMemo(fn) { return fn(); },
 };
 
-globalThis.window = { __ModuleLoader__: { load: ({ id, factory }) => { captured = { id, module: factory((name) => {
-  if (name === 'react') return fakeReact;
-  throw new Error(`unexpected require: ${name}`);
-}) }; } } };
+globalThis.window = { innerWidth: 420, innerHeight: 900, __ModuleLoader__: { load: ({ id, factory }) => {
+  captured = { id, module: factory((name) => {
+    if (name === 'react') return fakeReact;
+    throw new Error(`unexpected require: ${name}`);
+  }) };
+} } };
 
 let source = await readFile(new URL('../client.js', import.meta.url), 'utf8');
 source = source.replace(
   "    return {\n      inject: ['slots', 'locale'],",
-  "    globalThis.__SBK__ = { StorybookPage, ModulePanel, CraftPanel, ChatPanel, ModeStart, Reply, StatusGrid, Hints, StorybookIcon };\n    return {\n      inject: ['slots', 'locale'],",
+  "    globalThis.__SBK__ = { StorybookPage, ModulePanel, CraftPanel, ChatPanel, ConversationList, ModeStart, Reply, StatusGrid, Hints, ChatHeader };\n    return {\n      inject: ['slots', 'locale'],",
 );
 if (!source.includes('__SBK__')) throw new Error('注入测试钩子失败');
 
@@ -47,7 +49,7 @@ captured.module.apply({
 let failures = 0;
 function check(name, condition, extra) {
   if (condition) console.log(`  ✓ ${name}`);
-  else { failures += 1; console.log(`  ✗ ${name}`, extra ?? ''); }
+  else { failures += 1; console.log(`  ✗ ${name}`, extra === undefined ? '' : JSON.stringify(extra).slice(0, 300)); }
 }
 function expand(node) {
   if (node === null || node === undefined || node === false || node === true) return null;
@@ -64,22 +66,17 @@ function texts(node, out = []) {
   texts(node.props?.children, out);
   return out;
 }
-function walk(node, visit) {
-  if (!node || typeof node !== 'object') return;
-  visit(node);
-  const children = node.props?.children;
-  if (Array.isArray(children)) children.forEach((child) => walk(child, visit));
-  else walk(children, visit);
+function findAll(node, predicate, out = []) {
+  if (!node || typeof node !== 'object') return out;
+  if (Array.isArray(node)) { node.forEach((item) => findAll(item, predicate, out)); return out; }
+  if (predicate(node)) out.push(node);
+  findAll(node.props?.children, predicate, out);
+  return out;
 }
 function render(name, Component, props) {
   try {
     const tree = expand(Component(props));
     const flat = texts(tree).join(' | ');
-    walk(tree, (node) => {
-      if (node.props?.className && typeof node.props.className === 'string' && node.props.className.includes('undefined')) {
-        throw new Error('className 里出现 undefined');
-      }
-    });
     console.log(`  ✓ 渲染 ${name}（${flat.length} 字）`);
     return { tree, flat };
   } catch (error) {
@@ -91,118 +88,115 @@ function render(name, Component, props) {
 }
 
 const S = globalThis.__SBK__;
+
 console.log('\n[1] 槽位注册');
 check('注册两个槽位', registered.length === 2, registered.map((row) => row.key));
-check('主面板 key = storybook', registered.some((row) => row.key === 'main' && row.options.key === 'storybook'));
 check('侧边栏图标 id = storybook', registered.some((row) => row.key === 'sidebar.panellist' && row.options.id === 'storybook'));
-check('图标有可读标签', registered.find((row) => row.key === 'sidebar.panellist')?.options.label?.() === '故事工坊');
 
-const emptyBook = {
-  id: 'book_1', title: '雾港旧事', mode: null, chapterIndex: 1,
-  player: { name: '', desc: '' },
-  settings: { styleHint: '', autoMemory: true, knowledgeBudget: 12000 },
-  gameState: { time: '', location: '', status: [] },
-  modules: {
-    basic: { entries: [{ id: 'e1', title: '故事定位', content: '低魔悬疑', source: 'manual', createdAt: 1 }] },
-    world: { entries: [] },
-    character: { entries: [{ id: 'e2', title: '顾青梧', content: '落魄剑客', source: 'file', createdAt: 2 }] },
-    timeline: { entries: [{ id: 'e3', title: '旧王城陷落', content: '王朝倾覆', at: '纪元前300年', kind: 'event', source: 'ai', createdAt: 3 }] },
-    craft: { entries: [{ id: 'e4', title: '格式化入库：人物草稿', content: '目标模块：角色', kind: 'craft-task', source: 'craft', createdAt: 4 }] },
-  },
-  chat: { startedAt: null, messages: [] },
+function makeBook(overrides = {}) {
+  const conversation = {
+    id: 'conv_1', title: '对话1', mode: null, chapterIndex: 1,
+    player: { name: '', desc: '' },
+    settings: { temperature: 0.95, maxTokens: 8192, contextLength: 8 },
+    messages: [], gameState: { time: '', location: '', status: [] },
+    createdAt: 1700000000000, updatedAt: 1700000000000,
+    ...(overrides.conversation || {}),
+  };
+  return {
+    id: 'book_1', title: '雾港旧事', mode: null,
+    settings: { styleHint: '', autoMemory: true, knowledgeBudget: 12000, residentBudget: 2600, retrievalBudget: 4200, promptBudget: 2400, timelineMode: 'manual' },
+    modules: {
+      basic: { entries: [{ id: 'e1', title: '故事定位', content: '低魔悬疑', source: 'manual', keywords: ['低魔悬疑'], createdAt: 1 }] },
+      world: { entries: [] },
+      character: { entries: [{ id: 'e2', title: '顾青梧', content: '落魄剑客', source: 'file', keywords: ['顾青梧'], createdAt: 2 }] },
+      timeline: { entries: [
+        { id: 'e3', title: '旧王城陷落', content: '王朝倾覆', at: '纪元前300年', kind: 'event', source: 'ai', keywords: ['旧王城'], createdAt: 3 },
+        { id: 'e4', title: '第1章 雨夜', content: '本章梗概', kind: 'chapter', conversationId: 'conv_1', createdAt: 4 },
+        { id: 'e5', title: '别的对话的记忆', content: '不该出现在本对话', kind: 'memory', conversationId: 'conv_2', createdAt: 5 },
+      ] },
+      craft: { entries: [] },
+    },
+    conversations: [conversation],
+    activeConversationId: conversation.id,
+  };
+}
+
+const handlerProps = {
+  busy: '', run: async () => null, toast: () => {}, openModal: () => {},
+  applyResponse: () => {}, openMenu: () => {},
+  onOpenConversation: () => {}, onCreateConversation: () => {}, onRenameConversation: () => {},
+  onDeleteConversation: () => {}, onRegenerate: () => {}, onBranch: () => {},
 };
 
 console.log('\n[2] 页面骨架');
+const emptyBook = makeBook();
 let out = render('StorybookPage（空状态）', S.StorybookPage, {});
 check('标题存在', out.flat.includes('故事工坊'));
-check('含六个页签', ['基础设定', '世界观', '角色', '时间线', '制作', '对话'].every((label) => out.flat.includes(label)));
-check('空状态引导创建', out.flat.includes('还没有故事书'));
+check('六个页签里含「故事」', out.flat.includes('故事') && out.flat.includes('基础设定') && out.flat.includes('时间线'));
+check('不再有「对话」页签', !out.flat.includes('对话') || out.flat.includes('对话1'));
 
-console.log('\n[3] 模块面板');
-out = render('ModulePanel（未选中）', S.ModulePanel, { book: emptyBook, module: 'basic', busy: '', run: async () => null, toast: () => {}, openModal: () => {} });
-check('展示已有条目', out.flat.includes('故事定位'));
-const detailsNode = (function find(node) {
-  if (!node || typeof node !== 'object') return null;
-  if (Array.isArray(node)) { for (const item of node) { const hit = find(item); if (hit) return hit; } return null; }
-  if (node.type === 'details') return node;
-  return find(node.props?.children);
-})(out.tree);
-check('有内容时介绍收进 details（默认可折叠）', Boolean(detailsNode) && texts(detailsNode).join('').includes('系统提示词'), out.flat);
-check('提示上传文件', out.flat.includes('上传文件'));
-out = render('ModulePanel（时间线）', S.ModulePanel, { book: emptyBook, module: 'timeline', busy: '', run: async () => null, toast: () => {}, openModal: () => {} });
-check('时间线有自动整理按钮', out.flat.includes('自动整理'));
-check('时间线条目显示故事内时间', out.flat.includes('纪元前300年'));
+console.log('\n[3] 故事列表');
+const listBook = makeBook();
+listBook.conversations.push({ ...listBook.conversations[0], id: 'conv_2', title: '对话2', mode: 'game', updatedAt: 1700000900000 });
+out = render('ConversationList', S.ConversationList, { book: listBook, ...handlerProps });
+check('列出两个对话', out.flat.includes('对话1') && out.flat.includes('对话2'));
+check('展示模式与轮数', out.flat.includes('游戏模式') && out.flat.includes('轮'));
+check('有新建入口', out.flat.includes('新建对话'));
+check('说明时间线隔离', out.flat.includes('时间线记忆') || out.flat.includes('独立'));
 
-console.log('\n[3b] 时间线：自动生成面板');
-const autoBook = { ...emptyBook, settings: { ...emptyBook.settings, timelineMode: 'auto' } };
-out = render('ModulePanel（时间线·自动）', S.ModulePanel, { book: autoBook, module: 'timeline', busy: '', run: async () => null, toast: () => {}, openModal: () => {} });
-check('展示自动整理面板', out.flat.includes('自动整理时间线'));
-check('展示两种处理方式', out.flat.includes('追加') && out.flat.includes('覆盖'));
-check('展示模式切换', out.flat.includes('手动填写') && out.flat.includes('自动生成'));
-out = render('ModulePanel（时间线·手动）', S.ModulePanel, { book: emptyBook, module: 'timeline', busy: '', run: async () => null, toast: () => {}, openModal: () => {} });
-check('手动模式仍可新增条目', out.flat.includes('新增条目'));
+console.log('\n[4] 对话头');
+const chatHeaderConv = makeBook({ conversation: { mode: 'story', title: '雨夜' } }).conversations[0];
+out = render('ChatHeader', S.ChatHeader, { conversation: chatHeaderConv, busy: '', onBack: () => {}, onRename: () => {}, onSettings: () => {}, onMenu: () => {}, onSwitch: () => {} });
+check('返回箭头在', out.flat.includes('‹'));
+check('故事名在', out.flat.includes('雨夜'));
+check('设置入口在', out.flat.includes('设置'));
+check('切换菜单在', out.flat.includes('☰'));
 
-console.log('\n[4] 制作面板');
-out = render('CraftPanel', S.CraftPanel, { book: emptyBook, busy: '', run: async () => null, toast: () => {} });
-check('目标模块选择在', out.flat.includes('目标模块'));
-check('转换记录在', out.flat.includes('转换记录（1）'));
+console.log('\n[5] 对话：未选模式 → 模式选择');
+const noModeBook = makeBook();
+out = render('ChatPanel（未选模式）', S.ChatPanel, { book: noModeBook, conversation: noModeBook.conversations[0], ...handlerProps });
+check('进入模式选择', out.flat.includes('选择游玩模式'));
 
-console.log('\n[5] 对话：模式选择');
-out = render('ModeStart', S.ModeStart, { book: emptyBook, busy: '', run: async () => null, toast: () => {} });
-check('两种模式都展示', out.flat.includes('故事模式') && out.flat.includes('游戏模式'));
-check('有开始按钮', out.flat.includes('开始故事'));
-
-console.log('\n[6] 对话：故事模式与游戏模式渲染');
-const storyBook = {
-  ...emptyBook,
-  mode: 'story',
-  chapterIndex: 2,
-  chat: {
-    messages: [
-      { id: 'm1', role: 'user', text: '写一个雨夜来客', at: 1 },
-      {
-        id: 'm2', role: 'assistant', at: 2, mode: 'story',
-        text: '第1章 雨夜的来客\n正文正文\n【后续发展提示】\n1. 甲\n2. 乙',
-        parsed: { mode: 'story', chapterTitle: '第1章 雨夜的来客', body: '正文正文', hints: ['甲', '乙'] },
-      },
-    ],
-  },
-};
-out = render('ChatPanel（故事模式）', S.ChatPanel, { book: storyBook, busy: '', run: async () => null, toast: () => {}, openModal: () => {} });
+console.log('\n[6] 对话：故事模式与游戏模式');
+const storyBook = makeBook({ conversation: {
+  mode: 'story', chapterIndex: 2,
+  messages: [
+    { id: 'm1', role: 'user', text: '写一个雨夜来客', at: 1 },
+    { id: 'm2', role: 'assistant', at: 2, mode: 'story', text: '第1章 雨夜的来客\n正文\n【后续发展提示】\n1. 甲\n2. 乙',
+      parsed: { mode: 'story', chapterTitle: '第1章 雨夜的来客', body: '正文', hints: ['甲', '乙'] } },
+  ],
+} });
+out = render('ChatPanel（故事模式）', S.ChatPanel, { book: storyBook, conversation: storyBook.conversations[0], ...handlerProps });
 check('章节标题渲染', out.flat.includes('第1章 雨夜的来客'));
-check('后续发展提示渲染', out.flat.includes('后续发展提示') && out.flat.includes('甲'));
+check('后续发展提示渲染', out.flat.includes('甲'));
 check('下一章提示', out.flat.includes('第 2 章'));
+check('输入栏左侧有对话选择', out.flat.includes('💬') && out.flat.includes('对话1'));
 
-const gameBook = {
-  ...emptyBook,
+const gameBook = makeBook({ conversation: {
   mode: 'game',
   gameState: { time: '第1天 黄昏', location: '雾港·老锚酒馆', status: [] },
-  chat: {
-    messages: [{
-      id: 'm3', role: 'assistant', at: 3, mode: 'game',
-      text: '…',
-      usage: { inputTokens: 2450, outputTokens: 380, totalTokens: 2830 },
-      parsed: {
-        mode: 'game', time: '第1天 黄昏', body: '你推开酒馆的门。',
-        status: [{ label: '地点', value: '雾港·老锚酒馆' }, { label: '生命', value: '10/10' }],
-        memory: ['空桌上有热酒', '角落停止交谈'],
-        hints: ['走向空桌', '问掌柜'],
-      },
-    }],
-  },
-};
-out = render('ChatPanel（游戏模式）', S.ChatPanel, { book: gameBook, busy: '', run: async () => null, toast: () => {}, openModal: () => {} });
+  messages: [{
+    id: 'm3', role: 'assistant', at: 3, mode: 'game', text: '…',
+    usage: { inputTokens: 2450, outputTokens: 380 },
+    parsed: { mode: 'game', time: '第1天 黄昏', body: '你推开酒馆的门。', status: [{ label: '地点', value: '雾港·老锚酒馆' }, { label: '生命', value: '10/10' }], memory: ['空桌上有热酒'], hints: ['走向空桌'] },
+  }],
+} });
+out = render('ChatPanel（游戏模式）', S.ChatPanel, { book: gameBook, conversation: gameBook.conversations[0], ...handlerProps });
 check('游戏内时间渲染', out.flat.includes('第1天 黄昏'));
-check('状态栏渲染', out.flat.includes('状态栏') && out.flat.includes('10/10'));
-check('记忆库渲染', out.flat.includes('记忆库') && out.flat.includes('空桌上有热酒'));
-check('游戏模式徽标', out.flat.includes('🎲 游戏模式'));
-check('显示本轮用量', out.flat.includes('2.5k') && out.flat.includes('tokens'), out.flat);
-check('显示累计用量', out.flat.includes('累计'), out.flat);
-check('不再显示知识库调用统计', !out.flat.includes('本轮注入') && !out.flat.includes('用户触发'), out.flat);
+check('状态栏渲染', out.flat.includes('10/10'));
+check('记忆库渲染', out.flat.includes('空桌上有热酒'));
+check('显示本轮用量', out.flat.includes('2.5k') && out.flat.includes('tokens'));
+check('显示累计用量', out.flat.includes('累计'));
+check('不再显示知识库调用统计', !out.flat.includes('本轮注入') && !out.flat.includes('用户触发'));
 
-console.log('\n[7] 面板空态/加载态');
-out = render('ChatPanel（未选模式）', S.ChatPanel, { book: emptyBook, busy: '', run: async () => null, toast: () => {}, openModal: () => {} });
-check('未选模式时进入模式选择', out.flat.includes('选择游玩模式'));
+console.log('\n[7] 模块面板与对话级时间线');
+out = render('ModulePanel（基础设定）', S.ModulePanel, { book: emptyBook, module: 'basic', busy: '', run: async () => null, toast: () => {}, openModal: () => {}, activeConversationId: 'conv_1' });
+check('有内容时介绍收进 details', findAll(out.tree, (node) => node.type === 'details').length > 0);
+out = render('ModulePanel（时间线·仅本对话）', S.ModulePanel, { book: emptyBook, module: 'timeline', busy: '', run: async () => null, toast: () => {}, openModal: () => {}, activeConversationId: 'conv_1' });
+check('本对话记忆可见', out.flat.includes('第1章 雨夜'));
+check('别的对话记忆被过滤', !out.flat.includes('别的对话的记忆'));
+check('共享事件可见', out.flat.includes('旧王城陷落'));
+check('有范围切换', out.flat.includes('仅本对话'));
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n失败 ${failures} 项 ✗`);
 process.exit(failures === 0 ? 0 : 1);

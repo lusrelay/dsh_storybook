@@ -15,7 +15,7 @@ import { homedir } from 'node:os';
 export const inject = ['webServer'];
 
 const API_PREFIX = '/storybook';
-const BUILD = '1.2.1';
+const BUILD = '1.3.0';
 const MODULE_KEYS = ['basic', 'world', 'character', 'timeline', 'craft'];
 const MODULE_LABEL = {
   basic: '基础设定',
@@ -144,6 +144,42 @@ function normalizeBook(raw) {
   book.gameState = { time: '', location: '', status: [], ...(book.gameState || {}) };
   if (!Array.isArray(book.gameState.status)) book.gameState.status = [];
   if (typeof book.chapterIndex !== 'number' || book.chapterIndex < 1) book.chapterIndex = 1;
+
+  // 1.3.0：一本书可以有多个对话；旧数据合并成「对话1」
+  if (!Array.isArray(book.conversations) || book.conversations.length === 0) {
+    const legacy = {
+      id: newId('conv'),
+      title: '对话1',
+      mode: book.mode === 'game' || book.mode === 'story' ? book.mode : null,
+      chapterIndex: book.chapterIndex,
+      player: { name: '', desc: '', ...(book.player || {}) },
+      settings: {},
+      messages: Array.isArray(book.chat?.messages) ? book.chat.messages : [],
+      gameState: { time: '', location: '', status: [], ...(book.gameState || {}) },
+      createdAt: book.chat?.startedAt || book.createdAt || now(),
+      updatedAt: now(),
+    };
+    book.conversations = [legacy];
+    book.activeConversationId = legacy.id;
+    for (const entry of book.modules.timeline.entries) {
+      if ((entry.kind === 'memory' || entry.kind === 'chapter') && !entry.conversationId) entry.conversationId = legacy.id;
+    }
+  }
+  book.conversations = book.conversations.map((conversation, index) => ({
+    id: typeof conversation.id === 'string' ? conversation.id : newId('conv'),
+    title: cleanText(conversation.title, 60).trim() || `对话${index + 1}`,
+    mode: conversation.mode === 'game' || conversation.mode === 'story' ? conversation.mode : null,
+    chapterIndex: Number(conversation.chapterIndex) >= 1 ? Math.floor(conversation.chapterIndex) : 1,
+    player: { name: '', desc: '', ...(conversation.player || {}) },
+    settings: { temperature: 0.95, maxTokens: 8192, contextLength: 8, ...(conversation.settings || {}) },
+    messages: Array.isArray(conversation.messages) ? conversation.messages : [],
+    gameState: { time: '', location: '', status: [], ...(conversation.gameState || {}) },
+    createdAt: conversation.createdAt || now(),
+    updatedAt: conversation.updatedAt || now(),
+  }));
+  if (!book.activeConversationId || !book.conversations.some((conversation) => conversation.id === book.activeConversationId)) {
+    book.activeConversationId = book.conversations[0]?.id || null;
+  }
   return book;
 }
 
@@ -166,17 +202,52 @@ function saveBook(book) {
   });
 }
 
+function activeConversation(book) {
+  if (!book.activeConversationId) return book.conversations[0] || null;
+  return book.conversations.find((conversation) => conversation.id === book.activeConversationId) || book.conversations[0] || null;
+}
+
+function requireConversation(book, id) {
+  const conversation = id ? book.conversations.find((item) => item.id === id) : activeConversation(book);
+  if (!conversation) throw new Error('还没有对话，请先新建一个');
+  return conversation;
+}
+
+function conversationSummary(book, conversation) {
+  const messages = conversation.messages;
+  return {
+    id: conversation.id,
+    title: conversation.title,
+    mode: conversation.mode,
+    chapterIndex: conversation.chapterIndex,
+    messages: messages.length,
+    rounds: messages.filter((message) => message.role === 'assistant').length,
+    updatedAt: conversation.updatedAt,
+    createdAt: conversation.createdAt,
+    usage: messages.reduce((acc, message) => {
+      if (message.usage) {
+        acc.input += Number(message.usage.inputTokens) || 0;
+        acc.output += Number(message.usage.outputTokens) || 0;
+      }
+      return acc;
+    }, { input: 0, output: 0 }),
+    preview: (messages[messages.length - 1]?.text || '').replace(/\s+/g, ' ').slice(0, 60),
+    active: conversation.id === book.activeConversationId,
+  };
+}
+
 function summarize(book) {
   const counts = {};
   for (const key of MODULE_KEYS) counts[key] = book.modules[key].entries.length;
   return {
     id: book.id,
     title: book.title,
-    mode: book.mode,
+    mode: activeConversation(book)?.mode || null,
+    conversations: book.conversations.map((conversation) => conversationSummary(book, conversation)),
     createdAt: book.createdAt,
     updatedAt: book.updatedAt,
     counts,
-    messages: book.chat.messages.length,
+    messages: activeConversation(book)?.messages.length || 0,
   };
 }
 
@@ -280,12 +351,14 @@ function keywordList(entry) {
   return cleanKeywords(words);
 }
 
-function buildIndex(book) {
+function buildIndex(book, conversationId) {
   const keywords = new Map();
   const byId = new Map();
   for (const module of MODULE_KEYS) {
     for (const entry of book.modules[module].entries) {
       if (entry.kind === 'craft-task') continue;
+      // 对话沉淀的记忆只在所属对话里可见；世界观/角色/制作与手动事件共享
+      if ((entry.kind === 'memory' || entry.kind === 'chapter') && entry.conversationId && entry.conversationId !== conversationId) continue;
       byId.set(entry.id, { entry, module });
       for (const word of keywordList(entry)) {
         const key = word.toLowerCase();
@@ -353,8 +426,8 @@ function retrieve(book, index, text, { limit = 10, budget = 4200, exclude } = {}
   return { entries, keywords, chars: used };
 }
 
-function buildContext(book, message, lastAssistantText) {
-  const index = buildIndex(book);
+function buildContext(book, conversation, message, lastAssistantText) {
+  const index = buildIndex(book, conversation?.id || null);
   const residentBudget = Math.max(600, Number(book.settings.residentBudget) || 2600);
   const retrievalBudget = Math.max(800, Number(book.settings.retrievalBudget) || 4200);
   const limit = Math.max(3, Math.min(24, Number(book.settings.retrievalLimit) || 10));
@@ -387,7 +460,9 @@ function buildContext(book, message, lastAssistantText) {
   for (const module of ['world', 'character', 'craft']) {
     for (const entry of book.modules[module].entries) if (entry.always) pushResident(module, entry);
   }
-  for (const entry of book.modules.timeline.entries.filter((item) => item.kind === 'memory' || item.kind === 'chapter').slice(-6)) {
+  for (const entry of book.modules.timeline.entries
+    .filter((item) => (item.kind === 'memory' || item.kind === 'chapter') && (!item.conversationId || item.conversationId === conversation?.id))
+    .slice(-6)) {
     pushResident('timeline', entry);
   }
 
@@ -437,7 +512,7 @@ class ModelCallError extends Error {
   }
 }
 
-async function runModel(ctx, { system, prompt, maxTokens = 1600, temperature = 0.9, timeoutMs = 240000 }) {
+async function runModel(ctx, { system, prompt, maxTokens = 1600, temperature = 0.9, timeoutMs = 240000, signal: external, onDelta }) {
   const llm = ctx.get('llm');
   if (!llm || typeof llm.stream !== 'function') throw new ModelCallError('模型服务不可用：当前 Profile 未加载 llm 服务', 'UNAVAILABLE');
   const selection = ctx.get('agentDefaultModel')?.currentSelection?.();
@@ -447,6 +522,10 @@ async function runModel(ctx, { system, prompt, maxTokens = 1600, temperature = 0
     throw new ModelCallError('还没有选择默认模型，请先在「设置 → 模型」里选择一个模型', 'NO_MODEL');
   }
   const controller = new AbortController();
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', () => controller.abort(), { once: true });
+  }
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   timer.unref?.();
   let text = '';
@@ -464,7 +543,10 @@ async function runModel(ctx, { system, prompt, maxTokens = 1600, temperature = 0
     });
     for await (const chunk of stream) {
       if (!chunk || typeof chunk !== 'object') continue;
-      if (chunk.type === 'text-delta') text += chunk.text;
+      if (chunk.type === 'text-delta') {
+        text += chunk.text;
+        if (onDelta) onDelta(chunk.text);
+      }
       else if (chunk.type === 'usage') usage = chunk.usage;
       else if (chunk.type === 'finish') finish = chunk.reason;
     }
@@ -760,7 +842,9 @@ function timelineStatus(book) {
       events: timeline.filter((entry) => entry.kind === 'event').length,
       aiEvents: timeline.filter((entry) => entry.kind === 'event' && entry.source === 'ai').length,
       manualEvents: timeline.filter((entry) => entry.kind === 'event' && entry.source !== 'ai').length,
-      memories: timeline.filter((entry) => entry.kind === 'memory' || entry.kind === 'chapter').length,
+      memories: timeline.filter((entry) => (entry.kind === 'memory' || entry.kind === 'chapter')
+        && (!entry.conversationId || entry.conversationId === book.activeConversationId)).length,
+      conversations: book.conversations.length,
     },
   };
 }
@@ -773,8 +857,8 @@ function personaBlock(book) {
   return parts.join('\n');
 }
 
-function storyPrompt(book, message, history, knowledge) {
-  const chapter = book.chapterIndex || 1;
+function storyPrompt(book, conversation, message, history, knowledge) {
+  const chapter = conversation.chapterIndex || 1;
   const system = [
     personaBlock(book),
     '',
@@ -814,16 +898,16 @@ function storyPrompt(book, message, history, knowledge) {
   return { system, prompt };
 }
 
-function gamePrompt(book, message, history, knowledge) {
-  const playerName = book.player.name || '玩家角色';
-  const state = book.gameState || {};
+function gamePrompt(book, conversation, message, history, knowledge) {
+  const playerName = conversation.player.name || '玩家角色';
+  const state = conversation.gameState || {};
   const statusSnapshot = Array.isArray(state.status) && state.status.length
     ? state.status.map((row) => `${row.label ? `${row.label}：` : ''}${row.value}`).join('\n')
     : '（无，请在第一回合建立状态栏）';
   const system = [
     personaBlock(book),
     `你是一款硬核文字 RPG 的主持人（GM）。玩家扮演主角「${playerName}」。`,
-    book.player.desc ? `主角设定：${book.player.desc}` : '',
+    conversation.player.desc ? `主角设定：${conversation.player.desc}` : '',
     '',
     '【系统提示词 · 来自「基础设定」】',
     knowledge.prompt || '（作者没有填写额外指令，按下面的默认写法执行）',
@@ -879,8 +963,8 @@ function gamePrompt(book, message, history, knowledge) {
   return { system, prompt };
 }
 
-function historyBlock(book, limit = 8, charBudget = 4200) {
-  const messages = book.chat.messages.filter((item) => item.role === 'assistant' || item.role === 'user');
+function historyBlock(conversation, limit = 8, charBudget = 4200) {
+  const messages = conversation.messages.filter((item) => item.role === 'assistant' || item.role === 'user');
   const recent = messages.slice(-limit);
   let left = charBudget;
   const lines = [];
@@ -946,6 +1030,52 @@ function makeEntry(module, input, source = 'manual') {
 }
 
 export function apply(ctx) {
+  function prepareTurn(book, conversation, message) {
+    const history = historyBlock(conversation, conversation.settings?.contextLength || 8, 4200);
+    const lastAssistant = [...conversation.messages].reverse().find((item) => item.role === 'assistant');
+    const knowledge = buildContext(book, conversation, message, lastAssistant?.text || '');
+    const { system, prompt } = conversation.mode === 'game'
+      ? gamePrompt(book, conversation, message, history, knowledge)
+      : storyPrompt(book, conversation, message, history, knowledge);
+    return { history, knowledge, system, prompt };
+  }
+
+  function finishTurn(book, conversation, out, turn) {
+    const reply = requireText(out, conversation.mode === 'game' ? '本回合' : '本章');
+    const parsed = parseReply(conversation.mode, reply);
+    const assistant = {
+      id: newId('msg'),
+      role: 'assistant',
+      text: reply,
+      at: now(),
+      mode: conversation.mode,
+      chapter: conversation.mode === 'story' ? conversation.chapterIndex : null,
+      truncated: out.finishKind === 'max-tokens' || undefined,
+      context: turn.knowledge.stats,
+      usage: out.usage || undefined,
+      parsed,
+    };
+    conversation.messages.push(assistant);
+    conversation.updatedAt = now();
+    if (conversation.mode === 'story') conversation.chapterIndex += 1;
+    if (conversation.mode === 'game' && parsed.time) conversation.gameState.time = parsed.time;
+    if (conversation.mode === 'game' && parsed.status.length) {
+      conversation.gameState.status = parsed.status;
+      const location = parsed.status.find((row) => /地点|位置/.test(row.label));
+      if (location) conversation.gameState.location = location.value;
+    }
+    const memoryAdded = book.settings.autoMemory ? absorbMemory(book, conversation, assistant) : 0;
+    return {
+      book,
+      conversation: conversationSummary(book, conversation),
+      message: assistant,
+      memoryAdded,
+      truncated: out.finishKind === 'max-tokens',
+      context: turn.knowledge.stats,
+      usage: out.usage || undefined,
+    };
+  }
+
   const handlers = {
     async state() {
       const index = await loadIndex();
@@ -963,7 +1093,7 @@ export function apply(ctx) {
     async 'book/create'(payload) {
       await ensureDirs();
       const index = await loadIndex();
-      const book = emptyBook(cleanText(payload.title, 80).trim() || '未命名故事');
+      const book = normalizeBook(emptyBook(cleanText(payload.title, 80).trim() || '未命名故事'));
       if (payload.template) {
         book.modules.basic.entries.push(
           makeEntry('basic', {
@@ -1049,8 +1179,11 @@ export function apply(ctx) {
         }
       }
       if (patch.player && typeof patch.player === 'object') {
-        if (typeof patch.player.name === 'string') book.player.name = cleanText(patch.player.name, 40).trim();
-        if (typeof patch.player.desc === 'string') book.player.desc = cleanText(patch.player.desc, 2000);
+        const active = activeConversation(book);
+        if (active) {
+          if (typeof patch.player.name === 'string') active.player.name = cleanText(patch.player.name, 40).trim();
+          if (typeof patch.player.desc === 'string') active.player.desc = cleanText(patch.player.desc, 2000);
+        }
       }
       await saveBook(book);
       return { book };
@@ -1334,19 +1467,82 @@ export function apply(ctx) {
       return { book, added: created.length, target, created, chunks: chunks.length, warnings };
     },
 
+    async 'conversation/create'(payload) {
+      const book = await loadBook(payload.bookId);
+      const conversation = {
+        id: newId('conv'),
+        title: cleanText(payload.title, 60).trim() || `对话${book.conversations.length + 1}`,
+        mode: null,
+        chapterIndex: 1,
+        player: { name: '', desc: '' },
+        settings: { temperature: 0.95, maxTokens: 8192, contextLength: 8 },
+        messages: [],
+        gameState: { time: '', location: '', status: [] },
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      book.conversations.push(conversation);
+      book.activeConversationId = conversation.id;
+      await saveBook(book);
+      return { book, conversation };
+    },
+
+    async 'conversation/select'(payload) {
+      const book = await loadBook(payload.bookId);
+      const conversation = requireConversation(book, payload.id);
+      book.activeConversationId = conversation.id;
+      await saveBook(book);
+      return { book };
+    },
+
+    async 'conversation/rename'(payload) {
+      const book = await loadBook(payload.bookId);
+      const conversation = requireConversation(book, payload.id);
+      conversation.title = cleanText(payload.title, 60).trim() || conversation.title;
+      conversation.updatedAt = now();
+      await saveBook(book);
+      return { book };
+    },
+
+    async 'conversation/update'(payload) {
+      const book = await loadBook(payload.bookId);
+      const conversation = requireConversation(book, payload.id);
+      const settings = payload.settings || {};
+      if (Number.isFinite(settings.temperature)) conversation.settings.temperature = Math.min(2, Math.max(0, Number(settings.temperature)));
+      if (Number.isFinite(settings.maxTokens)) conversation.settings.maxTokens = Math.min(16384, Math.max(256, Math.round(Number(settings.maxTokens))));
+      if (Number.isFinite(settings.contextLength)) conversation.settings.contextLength = Math.min(40, Math.max(1, Math.round(Number(settings.contextLength))));
+      conversation.updatedAt = now();
+      await saveBook(book);
+      return { book };
+    },
+
+    async 'conversation/delete'(payload) {
+      const book = await loadBook(payload.bookId);
+      const conversation = requireConversation(book, payload.id);
+      if (book.conversations.length <= 1) throw new Error('至少保留一个对话');
+      const removedMemories = book.modules.timeline.entries.filter((entry) => entry.conversationId === conversation.id).length;
+      book.modules.timeline.entries = book.modules.timeline.entries.filter((entry) => entry.conversationId !== conversation.id);
+      book.conversations = book.conversations.filter((item) => item.id !== conversation.id);
+      if (book.activeConversationId === conversation.id) book.activeConversationId = book.conversations[0]?.id || null;
+      await saveBook(book);
+      return { book, removedMemories };
+    },
+
     async 'chat/start'(payload) {
       const book = await loadBook(payload.bookId);
+      const conversation = requireConversation(book, payload.conversationId);
       const mode = payload.mode === 'game' ? 'game' : 'story';
-      book.mode = mode;
-      book.chat.startedAt = book.chat.startedAt || now();
+      conversation.mode = mode;
+      conversation.updatedAt = now();
+      book.activeConversationId = conversation.id;
       if (mode === 'game') {
-        book.player.name = cleanText(payload.playerName, 40).trim() || book.player.name || '旅人';
-        if (typeof payload.playerDesc === 'string') book.player.desc = cleanText(payload.playerDesc, 2000);
-        const exists = book.modules.character.entries.some((entry) => entry.kind === 'player' || entry.title === `主角：${book.player.name}`);
-        if (!exists && book.player.desc.trim()) {
+        conversation.player.name = cleanText(payload.playerName, 40).trim() || conversation.player.name || '旅人';
+        if (typeof payload.playerDesc === 'string') conversation.player.desc = cleanText(payload.playerDesc, 2000);
+        const exists = book.modules.character.entries.some((entry) => entry.kind === 'player' || entry.title === `主角：${conversation.player.name}`);
+        if (!exists && conversation.player.desc.trim()) {
           book.modules.character.entries.unshift(makeEntry('character', {
-            title: `主角：${book.player.name}`,
-            content: book.player.desc,
+            title: `主角：${conversation.player.name}`,
+            content: conversation.player.desc,
             kind: 'player',
           }, 'player'));
         }
@@ -1358,78 +1554,155 @@ export function apply(ctx) {
 
     async 'chat/send'(payload) {
       const book = await loadBook(payload.bookId);
-      if (!book.mode) throw new Error('还没有选择模式，请先选择故事模式或游戏模式');
+      const conversation = requireConversation(book, payload.conversationId);
+      if (!conversation.mode) throw new Error('还没有选择模式，请先选择故事模式或游戏模式');
       const message = cleanText(payload.message, 8000).trim();
+      const turn = prepareTurn(book, conversation, message);
       if (message) {
-        book.chat.messages.push({
-          id: newId('msg'),
-          role: 'user',
-          text: message,
-          at: now(),
-        });
+        conversation.messages.push({ id: newId('msg'), role: 'user', text: message, at: now() });
       }
-      const history = historyBlock(book);
-      const lastAssistant = [...book.chat.messages].reverse().find((item) => item.role === 'assistant');
-      const knowledge = buildContext(book, message, lastAssistant?.text || '');
-      const { system, prompt } = book.mode === 'game'
-        ? gamePrompt(book, message, history, knowledge)
-        : storyPrompt(book, message, history, knowledge);
+      const maxTokens = conversation.settings.maxTokens || 8192;
       const out = await runModel(ctx, {
-        system,
-        prompt,
-        maxTokens: book.mode === 'game' ? 5120 : 8192,
-        temperature: 0.95,
+        system: turn.system,
+        prompt: turn.prompt,
+        maxTokens: conversation.mode === 'game' ? Math.min(maxTokens, 8192) : maxTokens,
+        temperature: conversation.settings.temperature ?? 0.95,
       });
-      const reply = requireText(out, book.mode === 'game' ? '本回合' : '本章');
-      const parsed = parseReply(book.mode, reply);
-      const assistant = {
-        id: newId('msg'),
-        role: 'assistant',
-        text: reply,
-        at: now(),
-        mode: book.mode,
-        chapter: book.mode === 'story' ? book.chapterIndex : null,
-        truncated: out.finishKind === 'max-tokens' || undefined,
-        context: knowledge.stats,
-        usage: out.usage || undefined,
-        parsed,
-      };
-      book.chat.messages.push(assistant);
-      if (book.mode === 'story') book.chapterIndex += 1;
-      if (book.mode === 'game' && parsed.time) book.gameState.time = parsed.time;
-      if (book.mode === 'game' && parsed.status.length) {
-        book.gameState.status = parsed.status;
-        const location = parsed.status.find((row) => /地点|位置/.test(row.label));
-        if (location) book.gameState.location = location.value;
-      }
-      const memoryAdded = book.settings.autoMemory ? absorbMemory(book, assistant) : 0;
+      const result = finishTurn(book, conversation, out, turn);
       await saveBook(book);
-      return { book, message: assistant, memoryAdded, truncated: out.finishKind === 'max-tokens', context: knowledge.stats, usage: out.usage || undefined };
+      return result;
+    },
+
+    async 'chat/stream'(payload, res, req) {
+      const book = await loadBook(payload.bookId);
+      const conversation = requireConversation(book, payload.conversationId);
+      if (!conversation.mode) throw new Error('还没有选择模式，请先选择故事模式或游戏模式');
+      const message = cleanText(payload.message, 8000).trim();
+      const turn = prepareTurn(book, conversation, message);
+      if (message) {
+        conversation.messages.push({ id: newId('msg'), role: 'user', text: message, at: now() });
+      }
+
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no',
+      });
+      const send = (event) => {
+        if (!res.writableEnded) res.write(`data: ${JSON.stringify(event)}\n\n`);
+      };
+      send({ type: 'start', conversationId: conversation.id });
+
+      const controller = new AbortController();
+      let closed = false;
+      req.on('close', () => {
+        closed = true;
+        controller.abort();
+      });
+      const maxTokens = conversation.settings.maxTokens || 8192;
+      try {
+        const out = await runModel(ctx, {
+          system: turn.system,
+          prompt: turn.prompt,
+          maxTokens: conversation.mode === 'game' ? Math.min(maxTokens, 8192) : maxTokens,
+          temperature: conversation.settings.temperature ?? 0.95,
+          signal: controller.signal,
+          onDelta: (text) => send({ type: 'delta', text }),
+        });
+        if (closed) return { streamed: true };
+        const result = finishTurn(book, conversation, out, turn);
+        await saveBook(book);
+        send({ type: 'done', ...result, truncated: out.finishKind === 'max-tokens' });
+        res.end();
+      } catch (error) {
+        if (!closed) {
+          send({ type: 'error', error: error.message || String(error) });
+          res.end();
+        }
+      }
+      return { streamed: true };
+    },
+
+    async 'chat/regenerate'(payload) {
+      const book = await loadBook(payload.bookId);
+      const conversation = requireConversation(book, payload.conversationId);
+      if (!conversation.mode) throw new Error('还没有选择模式');
+      while (conversation.messages.length && conversation.messages[conversation.messages.length - 1].role === 'assistant') {
+        conversation.messages.pop();
+      }
+      const lastUser = [...conversation.messages].reverse().find((item) => item.role === 'user');
+      if (!lastUser) throw new Error('没有可以重新生成的内容');
+      const turn = prepareTurn(book, conversation, lastUser.text);
+      const maxTokens = conversation.settings.maxTokens || 8192;
+      const out = await runModel(ctx, {
+        system: turn.system,
+        prompt: turn.prompt,
+        maxTokens: conversation.mode === 'game' ? Math.min(maxTokens, 8192) : maxTokens,
+        temperature: conversation.settings.temperature ?? 0.95,
+      });
+      const result = finishTurn(book, conversation, out, turn);
+      await saveBook(book);
+      return result;
+    },
+
+    async 'chat/branch'(payload) {
+      const book = await loadBook(payload.bookId);
+      const conversation = requireConversation(book, payload.conversationId);
+      const index = conversation.messages.findIndex((item) => item.id === payload.messageId);
+      if (index < 0) throw new Error('找不到要分支的消息');
+      const cloned = conversation.messages.slice(0, index + 1).map((item) => ({ ...item }));
+      const id = newId('conv');
+      const branch = {
+        id,
+        title: `分支 · ${conversation.title}`.slice(0, 40),
+        mode: conversation.mode,
+        chapterIndex: conversation.chapterIndex,
+        player: { ...conversation.player },
+        settings: { ...conversation.settings },
+        messages: cloned,
+        gameState: { ...conversation.gameState, status: [...(conversation.gameState.status || [])] },
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      const messageIds = new Set(cloned.map((item) => item.id));
+      const copied = book.modules.timeline.entries.filter(
+        (entry) => entry.conversationId === conversation.id && entry.sourceId && messageIds.has(entry.sourceId),
+      );
+      for (const entry of copied) {
+        book.modules.timeline.entries.push({ ...entry, id: newId('entry'), conversationId: id, createdAt: now(), updatedAt: now() });
+      }
+      book.conversations.push(branch);
+      book.activeConversationId = id;
+      await saveBook(book);
+      return { book, conversation: branch, copiedMemories: copied.length };
     },
 
     async 'chat/reset'(payload) {
       const book = await loadBook(payload.bookId);
-      book.chat.messages = [];
-      book.chat.startedAt = now();
-      book.chapterIndex = 1;
-      book.gameState = { time: '', location: '', status: [] };
+      const conversation = requireConversation(book, payload.conversationId);
+      conversation.messages = [];
+      conversation.chapterIndex = 1;
+      conversation.gameState = { time: '', location: '', status: [] };
+      conversation.updatedAt = now();
       await saveBook(book);
       return { book };
     },
 
     async 'chat/mode'(payload) {
       const book = await loadBook(payload.bookId);
-      book.mode = payload.mode === 'game' ? 'game' : 'story';
-      book.chat.messages = [];
-      book.chat.startedAt = now();
-      book.chapterIndex = 1;
-      book.gameState = { time: '', location: '', status: [] };
+      const conversation = requireConversation(book, payload.conversationId);
+      conversation.mode = payload.mode === 'game' ? 'game' : 'story';
+      conversation.messages = [];
+      conversation.chapterIndex = 1;
+      conversation.gameState = { time: '', location: '', status: [] };
+      conversation.updatedAt = now();
       await saveBook(book);
       return { book };
     },
   };
 
-  function absorbMemory(book, assistant) {
+  function absorbMemory(book, conversation, assistant) {
     const parsed = assistant.parsed || {};
     const created = [];
     if (assistant.mode === 'game') {
@@ -1437,26 +1710,27 @@ export function apply(ctx) {
       for (const line of memory.slice(0, 6)) {
         const text = cleanText(line, 300).trim();
         if (!text) continue;
-        const duplicate = book.modules.timeline.entries.some((entry) => entry.kind === 'memory' && entry.content === text);
+        const duplicate = book.modules.timeline.entries.some((entry) => entry.kind === 'memory' && entry.content === text && entry.conversationId === conversation.id);
         if (duplicate) continue;
         const entry = makeEntry('timeline', {
           title: parsed.time ? `${parsed.time}` : '记忆',
           content: text,
           kind: 'memory',
-          at: parsed.time || book.gameState.time || '',
+          at: parsed.time || conversation.gameState.time || '',
           keywords: extractKeywords(parsed.time || '', text),
         }, 'auto');
         entry.sourceId = assistant.id;
+        entry.conversationId = conversation.id;
         book.modules.timeline.entries.push(entry);
         created.push(entry);
       }
-      const memories = book.modules.timeline.entries.filter((entry) => entry.kind === 'memory');
+      const memories = book.modules.timeline.entries.filter((entry) => entry.kind === 'memory' && entry.conversationId === conversation.id);
       if (memories.length > 240) {
         const drop = new Set(memories.slice(0, memories.length - 240).map((entry) => entry.id));
         book.modules.timeline.entries = book.modules.timeline.entries.filter((entry) => !drop.has(entry.id));
       }
     } else {
-      const title = parsed.chapterTitle || `第${assistant.chapter || book.chapterIndex - 1}章`;
+      const title = parsed.chapterTitle || `第${assistant.chapter || (conversation.chapterIndex || 1) - 1}章`;
       const excerpt = String(parsed.body || assistant.text).replace(/\s+/g, ' ').slice(0, 260);
       if (excerpt) {
         const entry = makeEntry('timeline', {
@@ -1466,6 +1740,7 @@ export function apply(ctx) {
           keywords: extractKeywords(title, parsed.hints?.join('、') || excerpt),
         }, 'auto');
         entry.sourceId = assistant.id;
+        entry.conversationId = conversation.id;
         book.modules.timeline.entries.push(entry);
         created.push(entry);
       }
@@ -1490,6 +1765,10 @@ export function apply(ctx) {
         const executor = handlers[action];
         if (!executor) {
           sendJson(res, 404, { error: `未知操作：${action}` });
+          return;
+        }
+        if (action === 'chat/stream') {
+          await executor(payload, res, req);
           return;
         }
         const result = await executor(payload);

@@ -1,6 +1,6 @@
 /**
  * 关键词索引 + 三级触发检索 + 长文档不丢内容 的回归测试。
- * 运行：node tests/index.test.mjs
+ * DSH_HOME=/tmp/sbk-index node /root/sbk-index.mjs
  */
 import http from 'node:http';
 import { rm } from 'node:fs/promises';
@@ -8,14 +8,12 @@ import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
-
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sbk-idx-'));
-
-// 安全护栏：只允许在临时目录下建/删测试数据，绝不碰真实 $DSH_HOME
 const TEST_HOME = process.env.DSH_HOME;
 if (!TEST_HOME || !TEST_HOME.startsWith(tmpdir())) {
   throw new Error('测试必须在临时 DSH_HOME 下运行，拒绝操作真实数据目录');
 }
+
 const routes = [];
 const calls = { craft: 0, index: 0, timeline: 0, chat: 0, other: 0 };
 
@@ -72,7 +70,7 @@ async function* fakeStream(options) {
   yield { type: 'finish', reason: { kind: 'stop' } };
 }
 
-const { apply } = await import(new URL('../index.js', import.meta.url).href);
+const { apply } = await import('/root/dsh-storybook/index.js');
 apply(ctx);
 const server = http.createServer((req, res) => routes[0].handler(req, res));
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

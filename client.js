@@ -12,7 +12,7 @@ window.__ModuleLoader__.load({
       { key: 'character', label: '角色', glyph: '☾', hint: '身份 · 性格 · 动机 · 关系' },
       { key: 'timeline', label: '时间线', glyph: '⟳', hint: '事件 · 伏笔 · 记忆库', memory: true },
       { key: 'craft', label: '制作', glyph: '✦', hint: '资料格式化 · 文风 · 大纲' },
-      { key: 'chat', label: '对话', glyph: '✧', hint: '故事模式 · 游戏模式' },
+      { key: 'chat', label: '故事', glyph: '✧', hint: '多对话 · 流式输出' },
     ];
     const MODULE_LABEL = { basic: '基础设定', world: '世界观', character: '角色', timeline: '时间线', craft: '制作' };
 
@@ -37,6 +37,48 @@ window.__ModuleLoader__.load({
       }
       if (!response.ok || data?.error) throw new Error(data?.error || `请求失败（${response.status}）`);
       return data;
+    }
+
+    async function streamChat(payload, handlers) {
+      let response;
+      try {
+        response = await fetch(`${API}?action=chat/stream`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action: 'chat/stream', ...payload }),
+          credentials: 'same-origin',
+        });
+      } catch (error) {
+        throw new Error(`无法连接故事工坊服务：${error?.message || error}`);
+      }
+      if (!response.ok || !response.body) {
+        const text = await response.text().catch(() => '');
+        let message = `流式请求失败（${response.status}）`;
+        try { message = JSON.parse(text).error || message; } catch { /* 非 JSON 错误体 */ }
+        throw new Error(message);
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finished = false;
+      while (!finished) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let index = buffer.indexOf('\n\n');
+        while (index >= 0) {
+          const block = buffer.slice(0, index);
+          buffer = buffer.slice(index + 2);
+          const line = block.split('\n').find((item) => item.startsWith('data: '));
+          index = buffer.indexOf('\n\n');
+          if (!line) continue;
+          let event;
+          try { event = JSON.parse(line.slice(6)); } catch { continue; }
+          if (event.type === 'delta') handlers.onDelta?.(event.text);
+          else if (event.type === 'done') { finished = true; handlers.onDone?.(event); }
+          else if (event.type === 'error') { finished = true; handlers.onError?.(event.error); }
+        }
+      }
     }
 
     const CSS = `
@@ -103,6 +145,38 @@ window.__ModuleLoader__.load({
 .sbk-choice span{font-size:11.5px;color:var(--sbk-faint);line-height:1.5}
 .sbk-choice[data-active=true]{border-color:var(--sbk-accent);background:color-mix(in srgb,var(--sbk-accent) 7%,transparent)}
 .sbk-choice:disabled{opacity:.5;cursor:default}
+.sbk-head--chat{padding-top:10px;padding-bottom:6px}
+.sbk-chathead{display:flex;align-items:center;gap:8px;min-height:36px}
+.sbk-iconbtn{width:32px;height:32px;border-radius:10px;border:.5px solid transparent;background:transparent;color:var(--sbk-text);font:inherit;font-size:20px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.sbk-iconbtn:hover{background:var(--sbk-card)}
+.sbk-iconbtn:disabled{opacity:.4;cursor:default}
+.sbk-chat-title{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;border:0;background:transparent;color:var(--sbk-text);font:inherit;font-size:15px;font-weight:600;text-align:left;cursor:pointer;padding:4px 6px;border-radius:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sbk-chat-title:hover{background:var(--sbk-card)}
+.sbk-chat-sub{font-size:11.5px;font-weight:400;color:var(--sbk-faint);flex:none}
+.sbk-storylist{flex:1;min-height:0;overflow:auto;padding:18px clamp(12px,2.4vw,24px) 32px;scrollbar-width:thin}
+.sbk-storylist-head{display:flex;align-items:flex-end;gap:10px;max-width:900px;margin:0 auto 16px}
+.sbk-storylist-title{margin:0;font-size:19px;font-weight:600}
+.sbk-storylist-head p{margin:4px 0 0}
+.sbk-convs{max-width:900px;margin:0 auto;display:flex;flex-direction:column;gap:8px}
+.sbk-conv{display:flex;flex-direction:column;gap:3px;text-align:left;border:.5px solid var(--sbk-line);background:var(--dsw-alias-bg-base,#fff);color:inherit;font:inherit;padding:11px 14px;border-radius:14px;cursor:pointer;transition:border-color .15s,background .15s}
+.sbk-conv:hover{border-color:var(--sbk-line-strong);background:var(--sbk-card)}
+.sbk-conv[data-active=true]{border-color:var(--sbk-accent)}
+.sbk-conv-head{display:flex;align-items:center;gap:6px;min-width:0}
+.sbk-conv-title{font-size:14.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sbk-conv-meta{font-size:11.5px;color:var(--sbk-faint)}
+.sbk-conv-preview{font-size:12.5px;color:var(--sbk-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sbk-convswitch{flex:none;height:44px;max-width:36%;display:inline-flex;align-items:center;gap:4px;padding:0 10px;border-radius:12px;border:.5px solid var(--sbk-line-strong);background:var(--sbk-card);color:var(--sbk-text);font:inherit;font-size:12.5px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sbk-convswitch:hover:not(:disabled){border-color:var(--sbk-accent)}
+.sbk-convswitch:disabled{opacity:.5;cursor:default}
+.sbk-convswitch-caret{color:var(--sbk-faint);font-size:10px;flex:none}
+.sbk-menu-mask{position:absolute;inset:0;z-index:50}
+.sbk-menu{position:absolute;min-width:196px;background:var(--dsw-alias-bg-overlay,#fff);border:.5px solid var(--sbk-line-strong);border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.28);padding:5px;display:flex;flex-direction:column}
+.sbk-menu-item{text-align:left;border:0;background:transparent;color:var(--sbk-text);font:inherit;font-size:13px;padding:9px 10px;border-radius:8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sbk-menu-item:hover:not(:disabled){background:var(--sbk-card)}
+.sbk-menu-item:disabled{opacity:.4;cursor:default}
+.sbk-menu-item--danger{color:var(--sbk-danger)}
+.sbk-scope{height:24px;padding:0 8px;border-radius:8px;border:.5px solid var(--sbk-line);background:transparent;color:var(--sbk-dim);font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap}
+.sbk-scope[data-active=true]{border-color:var(--sbk-accent);color:var(--sbk-accent)}
 .sbk-usage{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;margin-top:10px;padding-top:8px;border-top:.5px dashed var(--sbk-line);font-size:11.5px;color:var(--sbk-faint);font-variant-numeric:tabular-nums}
 .sbk-usage-total{font-size:11.5px;color:var(--sbk-faint);white-space:nowrap;font-variant-numeric:tabular-nums}
 .sbk-empty--compact{gap:10px;padding:22px 16px}
@@ -303,7 +377,7 @@ window.__ModuleLoader__.load({
 
     /* ---------------------------------------------------------- 模块面板 */
 
-    function ModulePanel({ book, module, busy, run, toast, openModal }) {
+    function ModulePanel({ book, module, busy, run, toast, openModal, activeConversationId }) {
       const [selectedId, setSelectedId] = useState(null);
       const [draft, setDraft] = useState(null);
       const [query, setQuery] = useState('');
@@ -311,7 +385,11 @@ window.__ModuleLoader__.load({
       const [strategy, setStrategy] = useState('append');
       const fileRef = useRef(null);
       const meta = MODULES.find((item) => item.key === module);
-      const entries = book.modules[module].entries;
+      const allEntries = book.modules[module].entries;
+      const [scope, setScope] = useState('current');
+      const entries = module === 'timeline' && scope === 'current'
+        ? allEntries.filter((entry) => !entry.conversationId || entry.conversationId === activeConversationId)
+        : allEntries;
 
       useEffect(() => {
         setSelectedId(null);
@@ -465,6 +543,13 @@ window.__ModuleLoader__.load({
                   disabled: busy,
                   onClick: () => switchTimelineMode(item.key),
                 }, item.label))),
+              h('button', {
+                type: 'button',
+                className: 'sbk-scope',
+                'data-active': scope === 'current',
+                title: '对话沉淀的记忆按对话隔离',
+                onClick: () => setScope(scope === 'current' ? 'all' : 'current'),
+              }, scope === 'current' ? '仅本对话' : '全部对话'),
               h('span', { className: 'sbk-notice' },
                 timelineStatus?.stale
                   ? (timelineStatus.syncedAt ? '⚠ 设定有更新' : '未同步')
@@ -789,15 +874,88 @@ window.__ModuleLoader__.load({
         UsageNote({ message }));
     }
 
-    function ModeStart({ book, busy, run, toast }) {
+    /* ------------------------------------------------- 对话（故事）相关 */
+
+    function pressProps(openMenu, items) {
+      let timer = null;
+      const start = (event) => {
+        if (event?.button && event.button !== 0) return;
+        timer = setTimeout(() => { timer = null; openMenu(event, items); }, 480);
+      };
+      const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+      return {
+        onContextMenu: (event) => { event.preventDefault(); openMenu(event, items); },
+        onTouchStart: start,
+        onTouchEnd: cancel,
+        onTouchMove: cancel,
+        onTouchCancel: cancel,
+        onMouseDown: start,
+        onMouseUp: cancel,
+        onMouseLeave: cancel,
+      };
+    }
+
+    function conversationModeLabel(mode) {
+      return mode === 'game' ? '游戏模式' : mode === 'story' ? '故事模式' : '未开始';
+    }
+
+    function formatTime(value) {
+      if (!value) return '';
+      const date = new Date(value);
+      const diff = Date.now() - date.getTime();
+      if (diff < 60_000) return '刚刚';
+      if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+      if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+      return date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+    }
+
+    function ConversationList({ book, busy, run, toast, onOpen, onCreate, openMenu, onRename, onDelete }) {
+      const conversations = book.conversations || [];
+      return h('div', { className: 'sbk-storylist' },
+        h('div', { className: 'sbk-storylist-head' },
+          h('div', null,
+            h('h2', { className: 'sbk-storylist-title' }, '故事'),
+            h('p', { className: 'sbk-hint' }, '每个对话拥有独立的消息、章节与时间线记忆；世界观、角色与手动填写的事件全对话共享。')),
+          h('span', { className: 'sbk-spacer' }),
+          h(Btn, { variant: 'primary', onClick: onCreate, disabled: busy }, '＋ 新建对话')),
+        h('div', { className: 'sbk-convs' },
+          conversations.map((conversation) => {
+            const rounds = (conversation.messages || []).filter((item) => item.role === 'assistant').length;
+            const last = [...(conversation.messages || [])].reverse().find((item) => item.role === 'assistant');
+            return h('button', {
+              key: conversation.id,
+              type: 'button',
+              className: 'sbk-conv',
+              'data-active': conversation.id === book.activeConversationId,
+              onClick: () => onOpen(conversation.id),
+              ...pressProps(openMenu, [
+                { label: `进入「${conversation.title}」`, onClick: () => onOpen(conversation.id) },
+                { label: '重命名', onClick: () => onRename(conversation) },
+                { label: '删除对话', danger: true, onClick: () => onDelete(conversation) },
+              ]),
+            },
+            h('div', { className: 'sbk-conv-head' },
+              h('span', { className: 'sbk-conv-title' }, conversation.title),
+              h('span', { className: 'sbk-tag' }, conversationModeLabel(conversation.mode)),
+              conversation.id === book.activeConversationId ? h('span', { className: 'sbk-tag sbk-tag--ai' }, '当前') : null),
+            h('div', { className: 'sbk-conv-meta' },
+              `${rounds} 轮 · ${formatTime(conversation.updatedAt || conversation.createdAt)}`),
+            last ? h('div', { className: 'sbk-conv-preview' }, last.parsed?.chapterTitle || String(last.text || '').replace(/\s+/g, ' ').slice(0, 60)) : h('div', { className: 'sbk-conv-preview sbk-hint' }, '还没有内容，点进去开始'));
+          })),
+        conversations.length === 0
+          ? h('div', { className: 'sbk-empty' }, h('b', null, '还没有对话'), h(Btn, { variant: 'primary', onClick: onCreate }, '＋ 新建对话'))
+          : null);
+    }
+
+    function ModeStart({ book, conversation, busy, run, toast }) {
       const [mode, setMode] = useState('story');
-      const [playerName, setPlayerName] = useState(book.player?.name || '');
-      const [playerDesc, setPlayerDesc] = useState(book.player?.desc || '');
+      const [playerName, setPlayerName] = useState(conversation.player?.name || '');
+      const [playerDesc, setPlayerDesc] = useState(conversation.player?.desc || '');
       const [styleHint, setStyleHint] = useState(book.settings.styleHint || '');
 
       const start = async () => {
         const result = await run('chat/start', {
-          bookId: book.id, mode, playerName, playerDesc, styleHint,
+          bookId: book.id, conversationId: conversation.id, mode, playerName, playerDesc, styleHint,
         }, '准备故事…');
         if (result) toast(mode === 'game' ? '游戏开始，祝你好运' : '故事开始');
       };
@@ -808,7 +966,7 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sbk-mode-inner' },
           h('div', null,
             h('h2', { style: { margin: '0 0 6px', fontSize: 20, fontWeight: 600 } }, '选择游玩模式'),
-            h('div', { className: 'sbk-hint' }, hasKnowledge ? '当前故事书的知识库会实时注入对话。模式确定后即开始第一章。' : '这本故事书还没有知识库内容，可以先回各模块补充设定，也可以直接开始。')),
+            h('div', { className: 'sbk-hint' }, hasKnowledge ? `「${conversation.title}」会独立记录消息与时间线记忆。模式确定后即开始第一章。` : '这本故事书还没有知识库内容，可以先回各模块补充设定，也可以直接开始。')),
           h('div', { className: 'sbk-modes' },
             h('button', {
               type: 'button', className: 'sbk-modecard', 'data-active': mode === 'story',
@@ -846,10 +1004,22 @@ window.__ModuleLoader__.load({
             h(Btn, { variant: 'primary', onClick: start, disabled: busy }, mode === 'game' ? '开始游戏' : '开始故事'))));
     }
 
-    function ChatPanel({ book, busy, run, toast, openModal }) {
+    function ChatHeader({ conversation, busy, onBack, onRename, onSettings, onMenu, onSwitch }) {
+      return h('div', { className: 'sbk-chathead' },
+        h('button', { type: 'button', className: 'sbk-iconbtn', onClick: onBack, title: '返回故事列表' }, '‹'),
+        h('button', { type: 'button', className: 'sbk-chat-title', onClick: onRename, title: '点击重命名' },
+          conversation.title,
+          h('span', { className: 'sbk-chat-sub' }, conversationModeLabel(conversation.mode))),
+        h('span', { className: 'sbk-spacer' }),
+        h('button', { type: 'button', className: 'sbk-iconbtn', onClick: onSwitch, title: '切换 / 新建对话', disabled: busy }, '☰'),
+        h(Btn, { size: 'sm', variant: 'ghost', onClick: onSettings, disabled: busy }, '⚙ 设置'));
+    }
+
+    function ChatPanel({ book, conversation, busy, run, toast, openModal, applyResponse, openMenu, onOpenConversation, onCreateConversation, onRenameConversation, onDeleteConversation, onRegenerate, onBranch }) {
       const [input, setInput] = useState('');
+      const [streaming, setStreaming] = useState(null);
       const scrollRef = useRef(null);
-      const messages = book.chat.messages;
+      const messages = conversation.messages || [];
       const totalUsage = messages.reduce((acc, message) => {
         if (message.usage) {
           acc.in += Number(message.usage.inputTokens) || 0;
@@ -861,96 +1031,109 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         const node = scrollRef.current;
         if (node) node.scrollTop = node.scrollHeight;
-      }, [messages.length, busy]);
+      }, [messages.length, streaming?.text]);
 
       const pickHint = (hint) => setInput(hint);
 
-      const send = async () => {
-        if (busy) return;
-        const text = input.trim();
-        if (!text) {
-          toast('输入你的行动或方向', 'error');
-          return;
-        }
+      const send = async (text) => {
+        if (streaming || busy) return;
+        const message = String(text ?? input).trim();
+        if (!message) { toast('输入你的行动或方向', 'error'); return; }
         setInput('');
-        const result = await run('chat/send', { bookId: book.id, message: text }, book.mode === 'game' ? 'GM 正在推演…' : '正在续写这一章…');
-        if (result && result.memoryAdded > 0) toast(`+${result.memoryAdded} 条记忆已写入时间线`);
+        setStreaming({ text: '' });
+        try {
+          await streamChat({ bookId: book.id, conversationId: conversation.id, message }, {
+            onDelta: (chunk) => setStreaming((prev) => ({ text: (prev?.text || '') + chunk })),
+            onDone: (data) => { setStreaming(null); applyResponse(data); if (data.memoryAdded > 0) toast(`+${data.memoryAdded} 条记忆已写入时间线`); },
+            onError: (error) => { setStreaming(null); toast(error, 'error'); },
+          });
+        } catch (error) {
+          setStreaming(null);
+          toast(error?.message || String(error), 'error');
+        }
       };
 
-      const continueStory = async () => {
-        if (busy) return;
-        const result = await run('chat/send', { bookId: book.id, message: '' }, book.mode === 'game' ? 'GM 正在推演…' : '正在续写这一章…');
-        if (result && result.memoryAdded > 0) toast(`+${result.memoryAdded} 条记忆已写入时间线`);
-      };
+      const convMenuItems = (book.conversations || []).map((item) => ({
+        label: `${item.title}${item.id === conversation.id ? '（当前）' : ''}`,
+        onClick: () => onOpenConversation(item.id),
+      }));
+      convMenuItems.push({ label: '＋ 新建对话', onClick: onCreateConversation });
+      convMenuItems.push({ label: '重命名当前对话', onClick: () => onRenameConversation(conversation) });
+      convMenuItems.push({ label: '删除当前对话', danger: true, onClick: () => onDeleteConversation(conversation) });
 
-      if (!book.mode) return h(ModeStart, { book, busy, run, toast });
+      const chatMenuItems = [
+        { label: '重新输入（重生成上一条）', onClick: () => onRegenerate(conversation), disabled: !messages.some((item) => item.role === 'assistant') },
+        { label: '分支：从最后一条新建对话', onClick: () => onBranch(conversation, messages[messages.length - 1]?.id), disabled: messages.length === 0 },
+        { label: '新建对话', onClick: onCreateConversation },
+        { label: '删除当前对话', danger: true, onClick: () => onDeleteConversation(conversation) },
+      ];
 
-      const switchMode = () => {
-        openModal({
-          title: '切换模式',
-          description: '切换模式会清空当前对话记录（模块知识库保留），并从第一章重新开始。',
-          confirmText: '切换并重开',
-          danger: true,
-          onConfirm: async () => {
-            const result = await run('chat/mode', { bookId: book.id, mode: book.mode === 'game' ? 'story' : 'game' }, '切换中…');
-            if (result) toast(`已切换到${book.mode === 'game' ? '故事模式' : '游戏模式'}`);
-          },
-        });
-      };
-
-      const reset = () => {
-        openModal({
-          title: '清空对话',
-          description: '只清空对话记录与章节计数，各模块知识库与时间线记忆不会删除。',
-          confirmText: '清空',
-          danger: true,
-          onConfirm: async () => {
-            const result = await run('chat/reset', { bookId: book.id }, '清空中…');
-            if (result) toast('对话已清空');
-          },
-        });
-      };
+      if (!conversation.mode) return h(ModeStart, { book, conversation, busy, run, toast });
 
       return h('div', { className: 'sbk-chat' },
-        h('div', { className: 'sbk-toolbar' },
-          h('span', { className: 'sbk-tag', style: { color: 'var(--sbk-accent)' } }, book.mode === 'game' ? '🎲 游戏模式' : '📖 故事模式'),
-          book.mode === 'game' && book.gameState?.time ? h('span', { className: 'sbk-chat-time sbk-notice' }, `游戏内时间：${book.gameState.time}`) : null,
-          book.mode === 'story' ? h('span', { className: 'sbk-chat-time sbk-notice' }, `下一章：第 ${book.chapterIndex} 章`) : null,
+        h('div', { className: 'sbk-toolbar', ...pressProps(openMenu, chatMenuItems) },
+          h('span', { className: 'sbk-tag', style: { color: 'var(--sbk-accent)' } }, conversation.mode === 'game' ? '🎲 游戏模式' : '📖 故事模式'),
+          conversation.mode === 'game' && conversation.gameState?.time ? h('span', { className: 'sbk-chat-time sbk-notice' }, `游戏内时间：${conversation.gameState.time}`) : null,
+          conversation.mode === 'story' ? h('span', { className: 'sbk-chat-time sbk-notice' }, `下一章：第 ${conversation.chapterIndex} 章`) : null,
           h('span', { className: 'sbk-spacer' }),
           h('span', { className: 'sbk-rounds sbk-notice' }, `${messages.filter((m) => m.role === 'assistant').length} 轮`),
           totalUsage.in || totalUsage.out
             ? h('span', { className: 'sbk-usage-total' }, `累计 ↑${fmtTokens(totalUsage.in)} · ↓${fmtTokens(totalUsage.out)}`)
-            : null,
-          h('span', { className: 'sbk-actions' },
-            h(Btn, { size: 'sm', variant: 'ghost', onClick: switchMode, disabled: busy }, '切换模式'),
-            h(Btn, { size: 'sm', variant: 'ghost', onClick: reset, disabled: busy }, '清空'))),
-        h('div', { className: 'sbk-chat-scroll', ref: scrollRef },
-          messages.length === 0
+            : null),
+        h('div', {
+          className: 'sbk-chat-scroll',
+          ref: scrollRef,
+          onContextMenu: (event) => { event.preventDefault(); openMenu(event, chatMenuItems); },
+        },
+          messages.length === 0 && !streaming
             ? h('div', { className: 'sbk-empty' },
-              h('div', { className: 'sbk-empty-glyph' }, book.mode === 'game' ? '🎲' : '📖'),
-              h('b', null, book.mode === 'game' ? '输入你的第一个行动' : '写下故事的开端'),
+              h('div', { className: 'sbk-empty-glyph' }, conversation.mode === 'game' ? '🎲' : '📖'),
+              h('b', null, conversation.mode === 'game' ? '输入你的第一个行动' : '写下故事的开端'),
               h('div', { className: 'sbk-hint', style: { maxWidth: 380 } },
-                book.mode === 'game'
+                conversation.mode === 'game'
                   ? '例如「推开酒馆的门，环视四周」。GM 只会描写世界，不会替你做决定。'
-                  : '例如「写一个雨夜里，陌生人在驿站认出了主角」。'))
-            : messages.map((message) => message.role === 'user'
-              ? h('div', { key: message.id, className: 'sbk-msg sbk-msg--user' },
-                h('div', { className: 'sbk-bubble' }, message.text))
-              : h('div', { key: message.id, className: 'sbk-msg' },
-                h(Reply, { message, onPick: pickHint }))),
-          busy
+                  : '例如「写一个雨夜里，陌生人在驿站认出了主角」。'),
+              h('div', { className: 'sbk-hint' }, '长按或右键点击这里，可以重新输入、分支、新建或删除对话。'))
+            : messages.map((message, index) => message.role === 'user'
+              ? h('div', {
+                key: message.id,
+                className: 'sbk-msg sbk-msg--user',
+                ...pressProps(openMenu, [
+                  { label: '复制', onClick: () => copyText(message.text) },
+                  { label: '从这里分支', onClick: () => onBranch(conversation, message.id) },
+                ]),
+              }, h('div', { className: 'sbk-bubble' }, message.text))
+              : h('div', {
+                key: message.id,
+                className: 'sbk-msg',
+                ...pressProps(openMenu, [
+                  { label: '复制', onClick: () => copyText(message.text) },
+                  { label: '从这里分支', onClick: () => onBranch(conversation, message.id) },
+                  index === messages.length - 1 ? { label: '重新生成这一条', onClick: () => onRegenerate(conversation) } : null,
+                ].filter(Boolean)),
+              },
+              h(Reply, { message, onPick: pickHint }))),
+          streaming
             ? h('div', { className: 'sbk-msg' },
-              h('div', { className: 'sbk-reply', style: { display: 'flex', alignItems: 'center', gap: 10 } },
-                h('span', { className: 'sbk-pending' },
+              h('div', { className: 'sbk-reply' },
+                h('div', { className: 'sbk-copy' }, streaming.text || '…'),
+                h('div', { className: 'sbk-usage' }, h('span', { className: 'sbk-pending' },
                   h('span', { className: 'sbk-dot' }), h('span', { className: 'sbk-dot' }), h('span', { className: 'sbk-dot' }),
-                  h('span', null, book.mode === 'game' ? 'GM 正在推演…' : '正在续写…'))))
+                  h('span', null, '生成中…')))))
             : null),
         h('div', { className: 'sbk-composer' },
           h('div', { className: 'sbk-composer-inner' },
             h('div', { className: 'sbk-composer-row' },
+              h('button', {
+                type: 'button',
+                className: 'sbk-convswitch',
+                title: '切换对话',
+                disabled: busy || Boolean(streaming),
+                onClick: (event) => openMenu(event, convMenuItems),
+              }, `💬 ${conversation.title}`, h('span', { className: 'sbk-convswitch-caret' }, '▾')),
               h('textarea', {
                 value: input,
-                placeholder: book.mode === 'game' ? '描述你的行动……（Ctrl/⌘ + Enter 发送）' : '写下剧情走向或角色行动……（Ctrl/⌘ + Enter 发送）',
+                placeholder: conversation.mode === 'game' ? '描述你的行动……（Ctrl/⌘ + Enter 发送）' : '写下剧情走向或角色行动……（Ctrl/⌘ + Enter 发送）',
                 onChange: (event) => setInput(event.target.value),
                 onKeyDown: (event) => {
                   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
@@ -960,10 +1143,16 @@ window.__ModuleLoader__.load({
                 },
                 rows: 2,
               }),
-              h(Btn, { variant: 'primary', className: 'sbk-send', onClick: send, disabled: busy }, '发送')),
+              h(Btn, { variant: 'primary', className: 'sbk-send', onClick: () => send(), disabled: busy || Boolean(streaming) }, streaming ? '生成中' : '发送')),
             h('div', { className: 'sbk-inline' },
-              h(Btn, { size: 'sm', variant: 'ghost', onClick: continueStory, disabled: busy }, '继续（不输入）'),
-              h('span', { className: 'sbk-notice' }, book.mode === 'game' ? '游戏模式会实时维护状态栏与记忆库' : '故事模式每章末尾给出 3-5 条后续发展提示')))));
+              h(Btn, { size: 'sm', variant: 'ghost', onClick: () => send(''), disabled: busy || Boolean(streaming) }, '继续（不输入）'),
+              h('span', { className: 'sbk-notice' }, conversation.mode === 'game' ? '游戏模式会实时维护状态栏与记忆库' : '故事模式每章末尾给出 3-5 条后续发展提示')))));
+    }
+
+    function copyText(text) {
+      try {
+        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(() => {});
+      } catch { /* 剪贴板不可用时静默 */ }
     }
 
     /* --------------------------------------------------------------- 页面 */
@@ -972,9 +1161,11 @@ window.__ModuleLoader__.load({
       const [state, setState] = useState({ books: [], activeBookId: null });
       const [book, setBook] = useState(null);
       const [tab, setTab] = useState('basic');
+      const [storyListMode, setStoryListMode] = useState(true);
       const [busy, setBusy] = useState('');
       const [toastState, setToastState] = useState(null);
       const [modal, setModal] = useState(null);
+      const [menu, setMenu] = useState(null);
       const [loaded, setLoaded] = useState(false);
       const toastTimer = useRef(null);
 
@@ -1026,6 +1217,20 @@ window.__ModuleLoader__.load({
         return () => { alive = false; };
       }, [applyResponse, toast]);
 
+      const conversation = book
+        ? (book.conversations || []).find((item) => item.id === book.activeConversationId) || (book.conversations || [])[0] || null
+        : null;
+      const inChat = tab === 'chat' && !storyListMode && Boolean(conversation);
+
+      const openMenu = useCallback((event, items) => {
+        const point = event?.changedTouches?.[0] || event?.touches?.[0] || event;
+        setMenu({
+          x: Math.max(8, Math.min(point?.clientX ?? 120, (window.innerWidth || 360) - 210)),
+          y: Math.max(8, Math.min(point?.clientY ?? 120, (window.innerHeight || 640) - 60 - (items.length * 40))),
+          items,
+        });
+      }, []);
+
       const selectBook = async (id) => {
         if (!id || id === book?.id) return;
         setBusy('切换故事书…');
@@ -1033,6 +1238,7 @@ window.__ModuleLoader__.load({
           const data = await request('book/select', { id });
           applyResponse(data);
           setTab('basic');
+          setStoryListMode(true);
         } catch (error) {
           toast(error?.message || String(error), 'error');
         } finally {
@@ -1040,25 +1246,79 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const createBook = () => {
+      const openConversation = async (id) => {
+        if (!book) return;
+        if (book.activeConversationId !== id) {
+          const data = await run('conversation/select', { bookId: book.id, id }, '切换对话…');
+          if (!data) return;
+        }
+        setStoryListMode(false);
+      };
+
+      const createConversation = async () => {
+        if (!book) return;
+        const data = await run('conversation/create', { bookId: book.id }, '新建对话…');
+        if (data) {
+          setStoryListMode(false);
+          toast('已新建对话');
+        }
+      };
+
+      const renameConversation = (target) => {
         setModal({
-          kind: 'create',
-          title: '新建故事书',
-          description: '每本故事书拥有彼此隔离的模块与知识库，互不引用。',
-          value: '',
-          placeholder: '例如：雾港旧事',
-          confirmText: '创建',
+          kind: 'conv-rename',
+          id: target.id,
+          title: '重命名对话',
+          description: '默认按「对话1、对话2」命名，可改成任何你记得住的名字。',
+          value: target.title,
+          confirmText: '保存',
         });
       };
 
-      const deleteBook = () => {
+      const deleteConversation = (target) => {
         setModal({
-          kind: 'delete',
-          title: '删除故事书',
-          description: `将永久删除《${book?.title}》及其全部模块内容与对话记录，无法恢复。`,
+          kind: 'conv-delete',
+          id: target.id,
+          title: '删除对话',
+          description: `将删除「${target.title}」的全部消息，以及这场对话中生成的时间线记忆；共享的世界观/角色与手动事件不受影响。`,
           confirmText: '删除',
           danger: true,
         });
+      };
+
+      const conversationSettings = (target) => {
+        setModal({
+          kind: 'conv-settings',
+          id: target.id,
+          title: '对话设置',
+          temperature: target.settings?.temperature ?? 0.95,
+          maxTokens: target.settings?.maxTokens ?? 8192,
+          contextLength: target.settings?.contextLength ?? 8,
+          confirmText: '保存',
+        });
+      };
+
+      const regenerate = async (target) => {
+        if (!target) return;
+        const data = await run('chat/regenerate', { bookId: book.id, conversationId: target.id }, '正在重新生成…');
+        if (data) toast(data.memoryAdded > 0 ? `已重新生成，+${data.memoryAdded} 条记忆` : '已重新生成');
+      };
+
+      const branchFrom = async (target, messageId) => {
+        if (!target || !messageId) { toast('请选择一条消息再分支', 'error'); return; }
+        const data = await run('chat/branch', { bookId: book.id, conversationId: target.id, messageId }, '正在创建分支…');
+        if (data) {
+          setStoryListMode(false);
+          toast(`已从该消息分支（复制 ${data.copiedMemories || 0} 条记忆）`);
+        }
+      };
+
+      const createBook = () => {
+        setModal({ kind: 'create', title: '新建故事书', description: '每本故事书拥有彼此隔离的模块与知识库，互不引用。', value: '', placeholder: '例如：雾港旧事', confirmText: '创建' });
+      };
+
+      const deleteBook = () => {
+        setModal({ kind: 'delete', title: '删除故事书', description: `将永久删除《${book?.title}》及其全部模块内容、对话记录与时间线，无法恢复。`, confirmText: '删除', danger: true });
       };
 
       const settingsBook = () => {
@@ -1082,49 +1342,76 @@ window.__ModuleLoader__.load({
         setModal(null);
         if (current.kind === 'create') {
           const data = await run('book/create', { title: current.value, template: current.template !== false }, '创建中…');
-          if (data) {
-            setTab('basic');
-            toast('故事书已创建，可以先补充基础设定');
-          }
+          if (data) { setTab('basic'); toast('故事书已创建，可以先补充基础设定'); }
         } else if (current.kind === 'delete') {
           const data = await run('book/delete', { id: book.id }, '删除中…');
-          if (data) {
-            setBook(null);
-            setTab('basic');
-            toast('故事书已删除');
-          }
+          if (data) { setBook(null); setTab('basic'); toast('故事书已删除'); }
         } else if (current.kind === 'settings') {
           if (current.value && current.value.trim() && current.value.trim() !== book.title) {
             await run('book/rename', { id: book.id, title: current.value.trim() }, '重命名…');
           }
           const data = await run('book/update', {
             bookId: book.id,
-            patch: {
-              settings: {
-                styleHint: current.styleHint,
-                autoMemory: current.autoMemory,
-                knowledgeBudget: Number(current.budget) || 12000,
-                residentBudget: Number(current.resident) || 2600,
-                retrievalBudget: Number(current.retrieval) || 4200,
-                promptBudget: Number(current.prompt) ?? 2400,
-              },
-            },
+            patch: { settings: {
+              styleHint: current.styleHint,
+              autoMemory: current.autoMemory,
+              knowledgeBudget: Number(current.budget) || 12000,
+              residentBudget: Number(current.resident) || 2600,
+              retrievalBudget: Number(current.retrieval) || 4200,
+              promptBudget: Number(current.prompt) ?? 2400,
+            } },
           }, '保存设置…');
           if (data) toast('设置已保存');
+        } else if (current.kind === 'conv-rename') {
+          const data = await run('conversation/rename', { bookId: book.id, id: current.id, title: current.value }, '重命名…');
+          if (data) toast('对话已重命名');
+        } else if (current.kind === 'conv-delete') {
+          const data = await run('conversation/delete', { bookId: book.id, id: current.id }, '删除中…');
+          if (data) {
+            setStoryListMode(true);
+            toast(`对话已删除${data.removedMemories ? `（同时清理 ${data.removedMemories} 条记忆）` : ''}`);
+          }
+        } else if (current.kind === 'conv-settings') {
+          const data = await run('conversation/update', {
+            bookId: book.id, id: current.id,
+            settings: { temperature: Number(current.temperature), maxTokens: Number(current.maxTokens), contextLength: Number(current.contextLength) },
+          }, '保存对话设置…');
+          if (data) toast('对话设置已保存');
         }
       };
 
-      const moduleMeta = MODULES.find((item) => item.key === tab) || MODULES[0];
+      const selectTab = (key) => {
+        setTab(key);
+        if (key === 'chat') setStoryListMode(true);
+      };
 
       return h('div', { className: 'sbk-root' },
         h('style', { dangerouslySetInnerHTML: { __html: CSS } }),
         busy ? h('div', { className: 'sbk-busy' }) : null,
-        h(Header, {
-          state, book, tab, setTab, busy,
-          onCreate: createBook,
-          onSelect: selectBook,
-          onSettings: settingsBook,
-        }),
+        inChat
+          ? h('header', { className: 'sbk-head sbk-head--chat' },
+            h(ChatHeader, {
+              conversation,
+              busy,
+              onBack: () => setStoryListMode(true),
+              onRename: () => renameConversation(conversation),
+              onSettings: () => conversationSettings(conversation),
+              onSwitch: (event) => openMenu(event, [
+                ...(book.conversations || []).map((item) => ({
+                  label: `${item.title}${item.id === conversation.id ? '（当前）' : ''}`,
+                  onClick: () => openConversation(item.id),
+                })),
+                { label: '＋ 新建对话', onClick: createConversation },
+                { label: '重命名当前对话', onClick: () => renameConversation(conversation) },
+                { label: '删除当前对话', danger: true, onClick: () => deleteConversation(conversation) },
+              ]),
+            }))
+          : h(Header, {
+            state, book, tab, setTab: selectTab, busy,
+            onCreate: createBook,
+            onSelect: selectBook,
+            onSettings: settingsBook,
+          }),
         h('div', { className: 'sbk-body' },
           !loaded
             ? h('div', { className: 'sbk-empty' }, h('span', { className: 'sbk-pending' }, h('span', { className: 'sbk-dot' }), '正在载入故事书…'))
@@ -1133,13 +1420,42 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'sbk-empty-glyph' }, '✧'),
                 h('b', null, '还没有故事书'),
                 h('div', { className: 'sbk-hint', style: { maxWidth: 380 } },
-                  '先创建一本故事书。之后可以在「基础设定 / 世界观 / 角色 / 时间线 / 制作」里积累知识，再进入「对话」开始故事或游戏。'),
+                  '先创建一本故事书。之后可以在「基础设定 / 世界观 / 角色 / 时间线 / 制作」里积累知识，再进入「故事」开始对话。'),
                 h(Btn, { variant: 'primary', onClick: createBook }, '＋ 创建故事书'))
               : tab === 'chat'
-                ? h(ChatPanel, { book, busy, run, toast, openModal: setModal })
+                ? (storyListMode || !conversation
+                  ? h(ConversationList, {
+                    book, busy, run, toast,
+                    onOpen: openConversation,
+                    onCreate: createConversation,
+                    openMenu, onRename: renameConversation, onDelete: deleteConversation,
+                  })
+                  : h(ChatPanel, {
+                    book, conversation, busy, run, toast, openModal: setModal, applyResponse, openMenu,
+                    onOpenConversation: openConversation,
+                    onCreateConversation: createConversation,
+                    onRenameConversation: renameConversation,
+                    onDeleteConversation: deleteConversation,
+                    onRegenerate: regenerate,
+                    onBranch: branchFrom,
+                  }))
                 : tab === 'craft'
                   ? h(CraftPanel, { book, busy, run, toast })
-                  : h(ModulePanel, { book, module: tab, busy, run, toast, openModal: setModal })),
+                  : h(ModulePanel, { book, module: tab, busy, run, toast, openModal: setModal, activeConversationId: conversation?.id || null })),
+        menu
+          ? h('div', {
+            className: 'sbk-menu-mask',
+            onMouseDown: () => setMenu(null),
+            onContextMenu: (event) => { event.preventDefault(); setMenu(null); },
+          }, h('div', { className: 'sbk-menu', style: { left: menu.x, top: menu.y } },
+            menu.items.map((item) => h('button', {
+              key: item.label,
+              type: 'button',
+              className: `sbk-menu-item${item.danger ? ' sbk-menu-item--danger' : ''}`,
+              disabled: item.disabled,
+              onClick: () => { setMenu(null); item.onClick(); },
+            }, item.label))))
+          : null,
         toastState
           ? h('div', { className: 'sbk-toast', 'data-kind': toastState.kind, role: 'status' }, toastState.text)
           : null,
@@ -1153,14 +1469,31 @@ window.__ModuleLoader__.load({
             onConfirm: confirmModal,
             extraAction: modal.kind === 'settings' ? { label: '删除本书', onClick: deleteBook } : null,
           },
-          modal.kind === 'create'
-            ? h(Field, { label: '故事书名称' },
+          modal.kind === 'create' || modal.kind === 'conv-rename'
+            ? h(Field, { label: modal.kind === 'create' ? '故事书名称' : '对话名称' },
               h('input', {
                 className: 'sbk-input', autoFocus: true, value: modal.value,
                 placeholder: modal.placeholder,
                 onChange: (event) => setModal({ ...modal, value: event.target.value }),
               }))
-            : modal.kind === 'settings'
+            : modal.kind === 'conv-settings'
+              ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+                h(Field, { label: '温度 temperature', hint: '越高越天马行空，0-2' },
+                  h('input', {
+                    className: 'sbk-input', type: 'number', min: 0, max: 2, step: 0.05, value: modal.temperature,
+                    onChange: (event) => setModal({ ...modal, temperature: event.target.value }),
+                  })),
+                h(Field, { label: '单次输出上限 maxTokens', hint: '256-16384，含思考 token' },
+                  h('input', {
+                    className: 'sbk-input', type: 'number', min: 256, max: 16384, step: 256, value: modal.maxTokens,
+                    onChange: (event) => setModal({ ...modal, maxTokens: event.target.value }),
+                  })),
+                h(Field, { label: '上下文长度（条消息）', hint: '每轮带给模型的历史消息条数，1-40' },
+                  h('input', {
+                    className: 'sbk-input', type: 'number', min: 1, max: 40, step: 1, value: modal.contextLength,
+                    onChange: (event) => setModal({ ...modal, contextLength: event.target.value }),
+                  })))
+              : modal.kind === 'settings'
                 ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
                   h(Field, { label: '故事书名称' },
                     h('input', {
@@ -1192,11 +1525,10 @@ window.__ModuleLoader__.load({
                       type: 'checkbox', checked: modal.autoMemory,
                       onChange: (event) => setModal({ ...modal, autoMemory: event.target.checked }),
                     }),
-                    h('span', null, '对话后自动沉淀记忆到时间线')))
+                    h('span', null, '对话后自动沉淀记忆到时间线（按对话隔离）')))
                 : null)
           : null);
     }
-
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
