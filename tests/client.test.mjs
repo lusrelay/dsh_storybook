@@ -24,7 +24,7 @@ globalThis.window = { __ModuleLoader__: { load: ({ id, factory }) => { captured 
   throw new Error(`unexpected require: ${name}`);
 }) }; } } };
 
-let source = await readFile(new URL('../client.js', import.meta.url), 'utf8');
+let source = await readFile('/root/dsh-storybook/client.js', 'utf8');
 source = source.replace(
   "    return {\n      inject: ['slots', 'locale'],",
   "    globalThis.__SBK__ = { StorybookPage, ModulePanel, CraftPanel, ChatPanel, ModeStart, Reply, StatusGrid, Hints, StorybookIcon };\n    return {\n      inject: ['slots', 'locale'],",
@@ -121,10 +121,26 @@ check('空状态引导创建', out.flat.includes('还没有故事书'));
 console.log('\n[3] 模块面板');
 out = render('ModulePanel（未选中）', S.ModulePanel, { book: emptyBook, module: 'basic', busy: '', run: async () => null, toast: () => {}, openModal: () => {} });
 check('展示已有条目', out.flat.includes('故事定位'));
+const detailsNode = (function find(node) {
+  if (!node || typeof node !== 'object') return null;
+  if (Array.isArray(node)) { for (const item of node) { const hit = find(item); if (hit) return hit; } return null; }
+  if (node.type === 'details') return node;
+  return find(node.props?.children);
+})(out.tree);
+check('有内容时介绍收进 details（默认可折叠）', Boolean(detailsNode) && texts(detailsNode).join('').includes('系统提示词'), out.flat);
 check('提示上传文件', out.flat.includes('上传文件'));
 out = render('ModulePanel（时间线）', S.ModulePanel, { book: emptyBook, module: 'timeline', busy: '', run: async () => null, toast: () => {}, openModal: () => {} });
 check('时间线有自动整理按钮', out.flat.includes('自动整理'));
 check('时间线条目显示故事内时间', out.flat.includes('纪元前300年'));
+
+console.log('\n[3b] 时间线：自动生成面板');
+const autoBook = { ...emptyBook, settings: { ...emptyBook.settings, timelineMode: 'auto' } };
+out = render('ModulePanel（时间线·自动）', S.ModulePanel, { book: autoBook, module: 'timeline', busy: '', run: async () => null, toast: () => {}, openModal: () => {} });
+check('展示自动整理面板', out.flat.includes('自动整理时间线'));
+check('展示两种处理方式', out.flat.includes('追加') && out.flat.includes('覆盖'));
+check('展示模式切换', out.flat.includes('手动填写') && out.flat.includes('自动生成'));
+out = render('ModulePanel（时间线·手动）', S.ModulePanel, { book: emptyBook, module: 'timeline', busy: '', run: async () => null, toast: () => {}, openModal: () => {} });
+check('手动模式仍可新增条目', out.flat.includes('新增条目'));
 
 console.log('\n[4] 制作面板');
 out = render('CraftPanel', S.CraftPanel, { book: emptyBook, busy: '', run: async () => null, toast: () => {} });
@@ -165,6 +181,7 @@ const gameBook = {
     messages: [{
       id: 'm3', role: 'assistant', at: 3, mode: 'game',
       text: '…',
+      usage: { inputTokens: 2450, outputTokens: 380, totalTokens: 2830 },
       parsed: {
         mode: 'game', time: '第1天 黄昏', body: '你推开酒馆的门。',
         status: [{ label: '地点', value: '雾港·老锚酒馆' }, { label: '生命', value: '10/10' }],
@@ -179,6 +196,9 @@ check('游戏内时间渲染', out.flat.includes('第1天 黄昏'));
 check('状态栏渲染', out.flat.includes('状态栏') && out.flat.includes('10/10'));
 check('记忆库渲染', out.flat.includes('记忆库') && out.flat.includes('空桌上有热酒'));
 check('游戏模式徽标', out.flat.includes('🎲 游戏模式'));
+check('显示本轮用量', out.flat.includes('2.5k') && out.flat.includes('tokens'), out.flat);
+check('显示累计用量', out.flat.includes('累计'), out.flat);
+check('不再显示知识库调用统计', !out.flat.includes('本轮注入') && !out.flat.includes('用户触发'), out.flat);
 
 console.log('\n[7] 面板空态/加载态');
 out = render('ChatPanel（未选模式）', S.ChatPanel, { book: emptyBook, busy: '', run: async () => null, toast: () => {}, openModal: () => {} });

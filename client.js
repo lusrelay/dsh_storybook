@@ -103,8 +103,14 @@ window.__ModuleLoader__.load({
 .sbk-choice span{font-size:11.5px;color:var(--sbk-faint);line-height:1.5}
 .sbk-choice[data-active=true]{border-color:var(--sbk-accent);background:color-mix(in srgb,var(--sbk-accent) 7%,transparent)}
 .sbk-choice:disabled{opacity:.5;cursor:default}
-.sbk-ctx{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;margin-top:10px;padding-top:8px;border-top:.5px dashed var(--sbk-line);font-size:11.5px;color:var(--sbk-faint)}
-.sbk-ctx b{font-weight:500;color:var(--sbk-dim)}
+.sbk-usage{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;margin-top:10px;padding-top:8px;border-top:.5px dashed var(--sbk-line);font-size:11.5px;color:var(--sbk-faint);font-variant-numeric:tabular-nums}
+.sbk-usage-total{font-size:11.5px;color:var(--sbk-faint);white-space:nowrap;font-variant-numeric:tabular-nums}
+.sbk-empty--compact{gap:10px;padding:22px 16px}
+.sbk-details{max-width:380px;text-align:left;color:var(--sbk-faint);font-size:12px}
+.sbk-details summary{cursor:pointer;list-style:none;display:inline-flex;align-items:center;gap:6px;padding:2px 0}
+.sbk-details summary::-webkit-details-marker{display:none}
+.sbk-details summary:before{content:'▸';color:var(--sbk-faint)}
+.sbk-details[open] summary:before{content:'▾'}
 .sbk-list-foot{flex:none;padding:8px 12px 12px;border-top:.5px solid var(--sbk-line);display:flex;gap:6px;flex-wrap:wrap}
 .sbk-editor{flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden}
 .sbk-editor-head{flex:none;display:flex;gap:8px;align-items:center;padding:12px clamp(12px,2.4vw,24px) 8px;flex-wrap:wrap}
@@ -234,6 +240,13 @@ window.__ModuleLoader__.load({
             extraAction ? h(Btn, { variant: 'danger', className: 'sbk-modal-extra', onClick: extraAction.onClick }, extraAction.label) : null,
             h(Btn, { variant: 'ghost', onClick: onCancel }, '取消'),
             h(Btn, { variant: danger ? 'danger' : 'primary', onClick: onConfirm }, confirmText))));
+    }
+
+    function moduleIntro(module) {
+      if (module === 'basic') return '这里写的内容会作为系统提示词注入对话：类型、基调、叙事底线、禁止项等。它在输出格式规则之内优先遵守，建议写得像给作者的指令。';
+      if (module === 'timeline') return '时间线可以手动逐条填写，也可以切到「自动生成」，由 AI 读取「世界观 + 角色」提取事件；每次对话后还会自动沉淀记忆。';
+      if (module === 'craft') return '粘贴或上传原始资料，AI 会按目标模块的格式整理成条目并自动入库，同时留一条转换记录。';
+      return `${MODULES.find((item) => item.key === module)?.hint || ''}。左侧选中条目即可编辑，也可以直接上传文件，内容会自动转为知识库条目。`;
     }
 
     function readFileText(file) {
@@ -507,14 +520,18 @@ window.__ModuleLoader__.load({
               onRefresh: refreshTimelineStatus,
             })
             : !draft
-            ? h('div', { className: 'sbk-empty' },
-              h('div', { className: 'sbk-empty-glyph' }, meta.glyph),
-              h('b', null, meta.label),
-              h('div', { className: 'sbk-hint', style: { maxWidth: 360 } },
-                module === 'timeline'
-                  ? '时间线由「世界观 + 角色」自动提取，也会在每次对话后自动沉淀为记忆库。'
-                  : `${meta.hint}。左侧选中条目即可编辑，也可以直接上传文件，内容会自动转为知识库条目。`),
-              h(Btn, { variant: 'primary', onClick: startNew }, '＋ 新增条目'))
+            ? (entries.length === 0
+              ? h('div', { className: 'sbk-empty' },
+                h('div', { className: 'sbk-empty-glyph' }, meta.glyph),
+                h('b', null, meta.label),
+                h('div', { className: 'sbk-hint', style: { maxWidth: 380 } }, moduleIntro(module)),
+                h(Btn, { variant: 'primary', onClick: startNew }, '＋ 新增条目'))
+              : h('div', { className: 'sbk-empty sbk-empty--compact' },
+                h('b', null, `共 ${entries.length} 条${meta.label}`),
+                h(Btn, { variant: 'primary', size: 'sm', onClick: startNew }, '＋ 新增条目'),
+                h('details', { className: 'sbk-details' },
+                  h('summary', null, `${meta.label}模块说明`),
+                  h('div', { className: 'sbk-hint', style: { marginTop: 6 } }, moduleIntro(module)))))
             : [
               h('div', { className: 'sbk-editor-head', key: 'head' },
                 h('span', { className: 'sbk-spacer' }),
@@ -560,7 +577,9 @@ window.__ModuleLoader__.load({
                     onChange: (event) => setDraft({ ...draft, content: event.target.value }),
                   })),
                 h('div', { className: 'sbk-hint' },
-                  '这些内容会作为对话时的知识库被引用，且只在本故事书内生效。'))
+                  module === 'basic'
+                    ? '这段内容会作为系统提示词注入对话（在输出格式规则之内优先遵守），只在本故事书内生效。'
+                    : '这些内容会作为对话时的知识库被引用，且只在本故事书内生效。'))
             ]));
     }
 
@@ -715,13 +734,20 @@ window.__ModuleLoader__.load({
         h('div', { className: 'sbk-status-v' }, row.value))));
     }
 
-    function ContextNote({ context }) {
-      if (!context) return null;
-      return h('div', { className: 'sbk-ctx' },
-        h('span', null, `本轮注入：${context.retrieved || 0} 条检索 + ${context.resident || 0} 条常驻 · ${context.chars || 0} 字`),
-        context.keywords?.length ? h('span', null, `命中关键词：${context.keywords.slice(0, 6).join('、')}`) : null,
-        context.mention?.length ? h('span', null, `用户触发：${context.mention.slice(0, 4).map((row) => row.title).join('、')}`) : null,
-        context.echo?.length ? h('span', null, `AI 触发：${context.echo.slice(0, 4).map((row) => row.title).join('、')}`) : null);
+    function fmtTokens(value) {
+      const number = Number(value) || 0;
+      if (number >= 10000) return `${(number / 1000).toFixed(0)}k`;
+      if (number >= 1000) return `${(number / 1000).toFixed(1)}k`;
+      return String(number);
+    }
+
+    function UsageNote({ message }) {
+      const usage = message.usage;
+      if (!usage && !message.truncated) return null;
+      return h('div', { className: 'sbk-usage' },
+        usage ? h('span', null, `↑ ${fmtTokens(usage.inputTokens)} · ↓ ${fmtTokens(usage.outputTokens)} tokens`) : null,
+        usage?.reasoningTokens ? h('span', null, `思考 ${fmtTokens(usage.reasoningTokens)}`) : null,
+        message.truncated ? h('span', { className: 'sbk-warn' }, '输出达到长度上限') : null);
     }
 
     function Hints({ hints, onPick }) {
@@ -754,13 +780,13 @@ window.__ModuleLoader__.load({
               h('ul', { className: 'sbk-memory' }, parsed.memory.map((line, index) => h('li', { key: `${index}-${line}` }, line))))
             : null,
           h(Hints, { hints: parsed.hints, onPick }),
-          ContextNote({ context: message.context }));
+          UsageNote({ message }));
       }
       return h('div', { className: 'sbk-reply' },
         parsed.chapterTitle ? h('h3', { className: 'sbk-chapter' }, parsed.chapterTitle) : null,
         h('div', { className: 'sbk-copy' }, parsed.body || message.text),
         h(Hints, { hints: parsed.hints, onPick }),
-        ContextNote({ context: message.context }));
+        UsageNote({ message }));
     }
 
     function ModeStart({ book, busy, run, toast }) {
@@ -824,6 +850,13 @@ window.__ModuleLoader__.load({
       const [input, setInput] = useState('');
       const scrollRef = useRef(null);
       const messages = book.chat.messages;
+      const totalUsage = messages.reduce((acc, message) => {
+        if (message.usage) {
+          acc.in += Number(message.usage.inputTokens) || 0;
+          acc.out += Number(message.usage.outputTokens) || 0;
+        }
+        return acc;
+      }, { in: 0, out: 0 });
 
       useEffect(() => {
         const node = scrollRef.current;
@@ -885,6 +918,9 @@ window.__ModuleLoader__.load({
           book.mode === 'story' ? h('span', { className: 'sbk-chat-time sbk-notice' }, `下一章：第 ${book.chapterIndex} 章`) : null,
           h('span', { className: 'sbk-spacer' }),
           h('span', { className: 'sbk-rounds sbk-notice' }, `${messages.filter((m) => m.role === 'assistant').length} 轮`),
+          totalUsage.in || totalUsage.out
+            ? h('span', { className: 'sbk-usage-total' }, `累计 ↑${fmtTokens(totalUsage.in)} · ↓${fmtTokens(totalUsage.out)}`)
+            : null,
           h('span', { className: 'sbk-actions' },
             h(Btn, { size: 'sm', variant: 'ghost', onClick: switchMode, disabled: busy }, '切换模式'),
             h(Btn, { size: 'sm', variant: 'ghost', onClick: reset, disabled: busy }, '清空'))),
@@ -1035,6 +1071,7 @@ window.__ModuleLoader__.load({
           budget: book?.settings?.knowledgeBudget || 12000,
           resident: book?.settings?.residentBudget || 2600,
           retrieval: book?.settings?.retrievalBudget || 4200,
+          prompt: book?.settings?.promptBudget ?? 2400,
           confirmText: '保存',
         });
       };
@@ -1069,6 +1106,7 @@ window.__ModuleLoader__.load({
                 knowledgeBudget: Number(current.budget) || 12000,
                 residentBudget: Number(current.resident) || 2600,
                 retrievalBudget: Number(current.retrieval) || 4200,
+                promptBudget: Number(current.prompt) ?? 2400,
               },
             },
           }, '保存设置…');
@@ -1134,7 +1172,12 @@ window.__ModuleLoader__.load({
                       className: 'sbk-area', style: { minHeight: 80 }, value: modal.styleHint,
                       onChange: (event) => setModal({ ...modal, styleHint: event.target.value }),
                     })),
-                  h(Field, { label: '常驻预算（字符）', hint: '系统常驻块：基础设定 + 标记常驻的条目 + 最近记忆' },
+                  h(Field, { label: '提示词预算（字符）', hint: '基础设定作为系统提示词的注入上限' },
+                    h('input', {
+                      className: 'sbk-input', type: 'number', min: 0, max: 12000, step: 200, value: modal.prompt,
+                      onChange: (event) => setModal({ ...modal, prompt: event.target.value }),
+                    })),
+                  h(Field, { label: '常驻预算（字符）', hint: '常驻块：标记常驻的条目 + 最近记忆' },
                     h('input', {
                       className: 'sbk-input', type: 'number', min: 600, max: 20000, step: 200, value: modal.resident,
                       onChange: (event) => setModal({ ...modal, resident: event.target.value }),

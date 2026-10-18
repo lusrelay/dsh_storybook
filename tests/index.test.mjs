@@ -1,15 +1,10 @@
 /**
  * 关键词索引 + 三级触发检索 + 长文档不丢内容 的回归测试。
- * 运行：node tests/index.test.mjs
+ * DSH_HOME=/tmp/sbk-index node /root/sbk-index.mjs
  */
 import http from 'node:http';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-
-// 每个测试用独立临时目录，CI 里不需要预置环境变量。
-process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sbk-idx-'));
 
 const routes = [];
 const calls = { craft: 0, index: 0, timeline: 0, chat: 0, other: 0 };
@@ -39,8 +34,11 @@ function craftResponse(prompt) {
   }));
 }
 
+const systems = [];
+
 async function* fakeStream(options) {
   const system = String(options.system || '');
+  systems.push(system);
   const prompt = String(options.messages?.[0]?.content?.[0]?.text ?? '');
   let reply = '';
   if (system.includes('资料结构化助手')) {
@@ -64,7 +62,7 @@ async function* fakeStream(options) {
   yield { type: 'finish', reason: { kind: 'stop' } };
 }
 
-const { apply } = await import(new URL('../index.js', import.meta.url).href);
+const { apply } = await import('/root/dsh-storybook/index.js');
 apply(ctx);
 const server = http.createServer((req, res) => routes[0].handler(req, res));
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -110,7 +108,9 @@ console.log('\n[3] 用户触发：命中关键词才注入');
 await api('chat/start', { bookId, mode: 'story' });
 r = await api('chat/send', { bookId, message: '沈砚把钥匙放在柜台上。' });
 let stats = r.context;
-check('常驻包含基础设定与 always 角色', stats.resident >= 3, stats.resident);
+check('常驻只剩 always 角色与记忆', stats.resident === 2, stats.resident);
+check('基础设定进系统提示词', stats.promptChars > 0 && stats.prompt >= 1, { prompt: stats.prompt, chars: stats.promptChars });
+check('提示词内容确实前置', systems.some((text) => text.includes('系统提示词 · 来自「基础设定」') && text.includes('低魔悬疑')), systems.length);
 check('用户命中沈砚', stats.mention.some((row) => row.title === '沈砚'), stats.mention.map((x) => x.title));
 check('命中的关键词有记录', stats.keywords.length > 0, stats.keywords);
 r = await api('chat/send', { bookId, message: '我坐下，什么也没说。' });

@@ -15,7 +15,7 @@ import { homedir } from 'node:os';
 export const inject = ['webServer'];
 
 const API_PREFIX = '/storybook';
-const BUILD = '1.2.0';
+const BUILD = '1.2.1';
 const MODULE_KEYS = ['basic', 'world', 'character', 'timeline', 'craft'];
 const MODULE_LABEL = {
   basic: '基础设定',
@@ -138,7 +138,7 @@ function normalizeBook(raw) {
   }
   book.chat = book.chat && typeof book.chat === 'object' ? book.chat : { messages: [] };
   book.chat.messages = Array.isArray(book.chat.messages) ? book.chat.messages : [];
-  book.settings = { styleHint: '', autoMemory: true, knowledgeBudget: 12000, residentBudget: 2600, retrievalBudget: 4200, retrievalLimit: 10, maxEntriesPerConvert: 400, timelineMode: 'manual', ...(book.settings || {}) };
+  book.settings = { styleHint: '', autoMemory: true, knowledgeBudget: 12000, residentBudget: 2600, retrievalBudget: 4200, retrievalLimit: 10, maxEntriesPerConvert: 400, timelineMode: 'manual', promptBudget: 2400, ...(book.settings || {}) };
   book.timelineMeta = { syncedAt: 0, sourceHash: '', strategy: 'append', added: 0, chunks: 0, ...(book.timelineMeta || {}) };
   book.player = { name: '', desc: '', ...(book.player || {}) };
   book.gameState = { time: '', location: '', status: [], ...(book.gameState || {}) };
@@ -359,6 +359,21 @@ function buildContext(book, message, lastAssistantText) {
   const retrievalBudget = Math.max(800, Number(book.settings.retrievalBudget) || 4200);
   const limit = Math.max(3, Math.min(24, Number(book.settings.retrievalLimit) || 10));
 
+  // 基础设定不是「知识条目」，而是作者写的系统提示词：整段前置，不进检索池。
+  const promptBudget = Math.max(0, Number(book.settings.promptBudget) || 2400);
+  let promptLeft = promptBudget;
+  const promptParts = [];
+  for (const entry of book.modules.basic.entries) {
+    if (promptLeft <= 0) break;
+    const body = entryText(entry);
+    if (!body) continue;
+    const clipped = body.length > promptLeft ? `${body.slice(0, promptLeft)}…` : body;
+    promptParts.push(clipped);
+    promptLeft -= clipped.length;
+  }
+  const promptText = promptParts.join('\n\n');
+  const promptIds = new Set(book.modules.basic.entries.map((entry) => entry.id));
+
   const resident = [];
   let left = residentBudget;
   const pushResident = (module, entry) => {
@@ -369,7 +384,6 @@ function buildContext(book, message, lastAssistantText) {
     resident.push({ module, entry, text: clipped });
     left -= clipped.length;
   };
-  for (const entry of book.modules.basic.entries) pushResident('basic', entry);
   for (const module of ['world', 'character', 'craft']) {
     for (const entry of book.modules[module].entries) if (entry.always) pushResident(module, entry);
   }
@@ -377,7 +391,7 @@ function buildContext(book, message, lastAssistantText) {
     pushResident('timeline', entry);
   }
 
-  const residentIds = new Set(resident.map((row) => row.entry.id));
+  const residentIds = new Set([...resident.map((row) => row.entry.id), ...promptIds]);
   const mention = retrieve(book, index, message, { limit, budget: retrievalBudget, exclude: residentIds });
   const usedIds = new Set([...residentIds, ...mention.entries.map((row) => row.entry.id)]);
   const echo = lastAssistantText
@@ -399,7 +413,10 @@ function buildContext(book, message, lastAssistantText) {
 
   return {
     text: sections.join('\n\n'),
+    prompt: promptText,
     stats: {
+      prompt: promptParts.length,
+      promptChars: promptText.length,
       resident: resident.length,
       mention: mention.entries.map((row) => ({ id: row.id, title: row.entry.title, module: row.module })),
       echo: echo.entries.map((row) => ({ id: row.id, title: row.entry.title, module: row.module })),
@@ -761,6 +778,10 @@ function storyPrompt(book, message, history, knowledge) {
   const system = [
     personaBlock(book),
     '',
+    '【系统提示词 · 来自「基础设定」】',
+    knowledge.prompt || '（作者没有填写额外指令，按下面的默认写法执行）',
+    '以上是作者写的创作指令：在不违反下面输出格式的前提下优先遵守。',
+    '',
     '你是一位顶尖的中文互动小说作者。写作要求：',
     '- 以章节为单位推进故事，正文 1200-2200 字，画面感强，多用动作、对话与细节，少用总结和说教。',
     '- 永远不要替读者做重大决定，把选择权交给读者。',
@@ -803,6 +824,10 @@ function gamePrompt(book, message, history, knowledge) {
     personaBlock(book),
     `你是一款硬核文字 RPG 的主持人（GM）。玩家扮演主角「${playerName}」。`,
     book.player.desc ? `主角设定：${book.player.desc}` : '',
+    '',
+    '【系统提示词 · 来自「基础设定」】',
+    knowledge.prompt || '（作者没有填写额外指令，按下面的默认写法执行）',
+    '以上是作者写的创作指令：在不违反下面输出格式的前提下优先遵守。',
     '',
     '必须严格遵守以下规则：',
     '1. 正文不超过 1500 字（中文字符），只描写当前场景、NPC 反应与结果。',
@@ -1012,6 +1037,9 @@ export function apply(ctx) {
         }
         if (Number.isFinite(patch.settings.retrievalBudget)) {
           book.settings.retrievalBudget = Math.min(30000, Math.max(800, Math.round(patch.settings.retrievalBudget)));
+        }
+        if (Number.isFinite(patch.settings.promptBudget)) {
+          book.settings.promptBudget = Math.min(12000, Math.max(0, Math.round(patch.settings.promptBudget)));
         }
         if (Number.isFinite(patch.settings.maxEntriesPerConvert)) {
           book.settings.maxEntriesPerConvert = Math.min(2000, Math.max(40, Math.round(patch.settings.maxEntriesPerConvert)));
@@ -1363,6 +1391,7 @@ export function apply(ctx) {
         chapter: book.mode === 'story' ? book.chapterIndex : null,
         truncated: out.finishKind === 'max-tokens' || undefined,
         context: knowledge.stats,
+        usage: out.usage || undefined,
         parsed,
       };
       book.chat.messages.push(assistant);
@@ -1375,7 +1404,7 @@ export function apply(ctx) {
       }
       const memoryAdded = book.settings.autoMemory ? absorbMemory(book, assistant) : 0;
       await saveBook(book);
-      return { book, message: assistant, memoryAdded, truncated: out.finishKind === 'max-tokens', context: knowledge.stats };
+      return { book, message: assistant, memoryAdded, truncated: out.finishKind === 'max-tokens', context: knowledge.stats, usage: out.usage || undefined };
     },
 
     async 'chat/reset'(payload) {
