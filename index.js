@@ -15,7 +15,7 @@ import { homedir } from 'node:os';
 export const inject = ['webServer'];
 
 const API_PREFIX = '/storybook';
-const BUILD = '1.3.1';
+const BUILD = '1.4.0';
 const MODULE_KEYS = ['basic', 'world', 'character', 'timeline', 'craft'];
 const MODULE_LABEL = {
   basic: '基础设定',
@@ -1644,6 +1644,33 @@ export function apply(ctx) {
       const result = finishTurn(book, conversation, out, turn);
       await saveBook(book);
       return result;
+    },
+
+    async 'chat/edit-message'(payload) {
+      const book = await loadBook(payload.bookId);
+      const conversation = requireConversation(book, payload.conversationId);
+      const index = conversation.messages.findIndex((item) => item.id === payload.messageId);
+      if (index < 0) throw new Error('找不到这条消息');
+      const message = conversation.messages[index];
+      if (message.role !== 'user') throw new Error('只能编辑自己的消息');
+      const text = cleanText(payload.text, 8000).trim();
+      if (!text) throw new Error('消息不能为空');
+      message.text = text;
+      message.editedAt = now();
+
+      let removed = 0;
+      if (payload.truncateAfter) {
+        const dropped = conversation.messages.slice(index + 1);
+        removed = dropped.length;
+        const ids = new Set(dropped.map((item) => item.id));
+        book.modules.timeline.entries = book.modules.timeline.entries.filter(
+          (entry) => !(entry.conversationId === conversation.id && entry.sourceId && ids.has(entry.sourceId)),
+        );
+        conversation.messages = conversation.messages.slice(0, index + 1);
+      }
+      conversation.updatedAt = now();
+      await saveBook(book);
+      return { book, removed };
     },
 
     async 'chat/branch'(payload) {

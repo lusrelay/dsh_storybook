@@ -29,7 +29,7 @@ globalThis.window = { innerWidth: 420, innerHeight: 900, __ModuleLoader__: { loa
 let source = await readFile(new URL('../client.js', import.meta.url), 'utf8');
 source = source.replace(
   "    return {\n      inject: ['slots', 'locale'],",
-  "    globalThis.__SBK__ = { StorybookPage, ModulePanel, CraftPanel, ChatPanel, ConversationList, ModeStart, Reply, StatusGrid, Hints, ChatHeader, pressProps };\n    return {\n      inject: ['slots', 'locale'],",
+  "    globalThis.__SBK__ = { StorybookPage, ModulePanel, CraftPanel, ChatPanel, ConversationList, ModeStart, Reply, StatusGrid, Hints, ChatHeader, pressProps, TimelinePanel, sortTimeline };\n    return {\n      inject: ['slots', 'locale'],",
 );
 if (!source.includes('__SBK__')) throw new Error('注入测试钩子失败');
 
@@ -189,14 +189,26 @@ check('显示本轮用量', out.flat.includes('2.5k') && out.flat.includes('toke
 check('显示累计用量', out.flat.includes('累计'));
 check('不再显示知识库调用统计', !out.flat.includes('本轮注入') && !out.flat.includes('用户触发'));
 
-console.log('\n[7] 模块面板与对话级时间线');
+console.log('\n[7] 模块面板');
 out = render('ModulePanel（基础设定）', S.ModulePanel, { book: emptyBook, module: 'basic', busy: '', run: async () => null, toast: () => {}, openModal: () => {}, activeConversationId: 'conv_1' });
 check('有内容时介绍收进 details', findAll(out.tree, (node) => node.type === 'details').length > 0);
-out = render('ModulePanel（时间线·仅本对话）', S.ModulePanel, { book: emptyBook, module: 'timeline', busy: '', run: async () => null, toast: () => {}, openModal: () => {}, activeConversationId: 'conv_1' });
+
+console.log('\n[7b] 时间线竖轴');
+const sortedList = S.sortTimeline([
+  { id: 'a', at: '第10年·夏', title: 'A' },
+  { id: 'b', at: '纪元前300年', title: 'B' },
+  { id: 'c', at: '第3年', title: 'C' },
+  { id: 'd', at: '', title: 'D', createdAt: 1 },
+]);
+check('按故事内时间排序（纪元前 → 第3年 → 第10年 → 无时间）', sortedList.map((item) => item.id).join('') === 'bcad', sortedList.map((item) => item.id));
+out = render('TimelinePanel', S.TimelinePanel, { book: emptyBook, busy: '', run: async () => null, toast: () => {}, openModal: () => {}, activeConversationId: 'conv_1' });
 check('本对话记忆可见', out.flat.includes('第1章 雨夜'));
 check('别的对话记忆被过滤', !out.flat.includes('别的对话的记忆'));
 check('共享事件可见', out.flat.includes('旧王城陷落'));
 check('有范围切换', out.flat.includes('仅本对话'));
+check('渲染竖轴节点', findAll(out.tree, (node) => String(node.props?.className || '').includes('sbk-axis-card')).length === 2,
+  findAll(out.tree, (node) => String(node.props?.className || '').includes('sbk-axis-card')).length);
+check('有自动整理入口', out.flat.includes('自动整理'));
 
 console.log('\n[8] 长按菜单的点击抑制');
 let opened = null;

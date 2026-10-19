@@ -125,6 +125,24 @@ check('消息数不变', afterRegen.messages.length === before.messages.length);
 check('最后一条被替换', afterRegen.messages[afterRegen.messages.length - 1].id !== oldAssistantId);
 check('仍是一条助手回复', afterRegen.messages[afterRegen.messages.length - 1].role === 'assistant');
 
+console.log('\n[6b] 编辑用户消息（可回退剧情）');
+const convBeforeEdit = (await api('book', { id: book.id })).book.conversations.find((c) => c.id === branchConv.id);
+const userMessage = convBeforeEdit.messages.find((item) => item.role === 'user');
+const memoryBefore = (await api('book', { id: book.id })).book.modules.timeline.entries.filter((entry) => entry.conversationId === branchConv.id).length;
+r = await api('chat/edit-message', {
+  bookId: book.id, conversationId: branchConv.id, messageId: userMessage.id,
+  text: '改写后的输入，剧情从这里重来。', truncateAfter: true,
+});
+const convAfterEdit = r.book.conversations.find((c) => c.id === branchConv.id);
+check('消息文本已更新', convAfterEdit.messages[0].text === '改写后的输入，剧情从这里重来。', convAfterEdit.messages[0]?.text);
+check('后续消息被截断', convAfterEdit.messages.length === 1, convAfterEdit.messages.length);
+check('返回被删条数', r.removed === 1, r.removed);
+check('后续记忆一起清理', r.book.modules.timeline.entries.filter((entry) => entry.conversationId === branchConv.id).length < memoryBefore);
+r = await api('chat/edit-message', { bookId: book.id, conversationId: branchConv.id, messageId: convAfterEdit.messages[0].id, text: '只改措辞', truncateAfter: false });
+check('不截断时保留消息', r.book.conversations.find((c) => c.id === branchConv.id).messages.length === 1 && r.removed === 0, r.removed);
+r = await api('chat/edit-message', { bookId: book.id, conversationId: branchConv.id, messageId: convAfterEdit.messages[0].id, text: '', truncateAfter: false });
+check('空消息被拒绝', Boolean(r.error), r.error);
+
 console.log('\n[7] 流式输出');
 const streamResponse = await fetch(`http://127.0.0.1:${port}/storybook/api?action=chat/stream`, {
   method: 'POST', headers: { 'content-type': 'application/json' },

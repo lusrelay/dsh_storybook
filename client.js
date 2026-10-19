@@ -177,6 +177,24 @@ window.__ModuleLoader__.load({
 .sbk-menu-item--danger{color:var(--sbk-danger)}
 .sbk-scope{height:24px;padding:0 8px;border-radius:8px;border:.5px solid var(--sbk-line);background:transparent;color:var(--sbk-dim);font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap}
 .sbk-scope[data-active=true]{border-color:var(--sbk-accent);color:var(--sbk-accent)}
+.sbk-backbtn{width:auto;padding:0 10px;font-size:13px;gap:4px}
+.sbk-tl{flex:1;min-height:0;overflow:auto;padding:14px clamp(12px,2.4vw,24px) 40px;scrollbar-width:thin}
+.sbk-tl-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.sbk-axis{position:relative;max-width:820px;margin:0 auto;padding-left:24px}
+.sbk-axis:before{content:'';position:absolute;left:8px;top:6px;bottom:6px;width:1px;background:var(--sbk-line-strong)}
+.sbk-axis-item{position:relative;margin-bottom:12px}
+.sbk-axis-dot{position:absolute;left:-20px;top:15px;width:9px;height:9px;border-radius:50%;background:var(--sbk-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--sbk-accent) 16%,transparent)}
+.sbk-axis-card{display:block;width:100%;text-align:left;border:.5px solid var(--sbk-line);background:var(--dsw-alias-bg-base,#fff);color:inherit;font:inherit;padding:9px 12px;border-radius:12px;cursor:pointer;transition:border-color .15s,background .15s}
+.sbk-axis-card:hover{border-color:var(--sbk-accent);background:var(--sbk-card)}
+.sbk-axis-time{font-size:11.5px;color:var(--sbk-accent);font-variant-numeric:tabular-nums}
+.sbk-axis-title{font-size:13.5px;font-weight:600;margin:2px 0;line-height:1.5}
+.sbk-axis-snippet{font-size:12px;color:var(--sbk-dim);display:-webkit-box;-webkit-line-clamp:2;line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.sbk-axis-tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:5px}
+.sbk-sheet{width:min(560px,100%);max-height:82vh;overflow:auto;background:var(--dsw-alias-bg-overlay,#fff);border:.5px solid var(--sbk-line);border-radius:16px;padding:16px;box-shadow:0 18px 48px rgba(0,0,0,.28);display:flex;flex-direction:column;gap:8px}
+.sbk-sheet h3{margin:0;font-size:15px;font-weight:600}
+.sbk-sheet-meta{font-size:11.5px;color:var(--sbk-faint)}
+.sbk-sheet-body{white-space:pre-wrap;font-size:13.5px;line-height:1.75;overflow-wrap:anywhere}
+.sbk-sheet-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:8px;flex-wrap:wrap}
 .sbk-usage{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;margin-top:10px;padding-top:8px;border-top:.5px dashed var(--sbk-line);font-size:11.5px;color:var(--sbk-faint);font-variant-numeric:tabular-nums}
 .sbk-usage-total{font-size:11.5px;color:var(--sbk-faint);white-space:nowrap;font-variant-numeric:tabular-nums}
 .sbk-empty--compact{gap:10px;padding:22px 16px}
@@ -273,6 +291,17 @@ window.__ModuleLoader__.load({
 .sbk-tab-glyph{display:none}
 .sbk-headbar .sbk-btn{height:28px;padding:0 10px}
 .sbk-rounds{display:none}
+.sbk-head--chat{padding-left:52px}
+@media (min-width:760px){
+.sbk-axis{padding-left:0}
+.sbk-axis:before{left:50%}
+.sbk-axis-item{width:50%;padding-right:26px}
+.sbk-axis-item[data-side=right]{margin-left:50%;padding-right:0;padding-left:26px}
+.sbk-axis-item[data-side=left] .sbk-axis-dot{left:auto;right:-5px}
+.sbk-axis-item[data-side=right] .sbk-axis-dot{left:-5px;right:auto}
+.sbk-axis-item[data-side=left] .sbk-axis-card{text-align:right}
+.sbk-axis-item[data-side=left] .sbk-axis-tags{justify-content:flex-end}
+}
 .sbk-actions{margin-left:auto}
 }
 `;
@@ -1019,9 +1048,181 @@ window.__ModuleLoader__.load({
             h(Btn, { variant: 'primary', onClick: start, disabled: busy }, mode === 'game' ? '开始游戏' : '开始故事'))));
     }
 
+    function timelineSortValue(at) {
+      const text = String(at || '');
+      let match = /(?:纪元前|公元前|BC)\s*(\d+)/i.exec(text);
+      if (match) return -Number(match[1]);
+      match = /(?:纪元后|公元|AD)\s*(\d+)/i.exec(text);
+      if (match) return Number(match[1]);
+      match = /第\s*(\d+)\s*年/.exec(text);
+      if (match) return Number(match[1]);
+      match = /第\s*(\d+)\s*[天日]/.exec(text);
+      if (match) return Number(match[1]) / 400;
+      match = /第\s*(\d+)\s*章/.exec(text);
+      if (match) return Number(match[1]) / 1000;
+      match = /(\d{1,4})\s*年/.exec(text);
+      if (match) return Number(match[1]);
+      return null;
+    }
+
+    function sortTimeline(entries) {
+      return [...entries].sort((left, right) => {
+        const a = timelineSortValue(left.at);
+        const b = timelineSortValue(right.at);
+        if (a !== null && b !== null && a !== b) return a - b;
+        if (a !== null && b === null) return -1;
+        if (a === null && b !== null) return 1;
+        return (left.createdAt || 0) - (right.createdAt || 0);
+      });
+    }
+
+    function TimelinePanel({ book, busy, run, toast, openModal, activeConversationId }) {
+      const [scope, setScope] = useState('current');
+      const [status, setStatus] = useState(null);
+      const [sheet, setSheet] = useState(null);
+      const mode = book.settings?.timelineMode === 'auto' ? 'auto' : 'manual';
+
+      useEffect(() => {
+        let alive = true;
+        request('timeline/status', { bookId: book.id })
+          .then((data) => { if (alive) setStatus(data.status); })
+          .catch(() => {});
+        return () => { alive = false; };
+      }, [book.id, book.updatedAt]);
+
+      const all = book.modules.timeline.entries;
+      const visible = scope === 'current'
+        ? all.filter((entry) => !entry.conversationId || entry.conversationId === activeConversationId)
+        : all;
+      const sorted = sortTimeline(visible);
+
+      const switchMode = async (next) => {
+        if (next === mode) return;
+        await run('book/update', { bookId: book.id, patch: { settings: { timelineMode: next } } }, '切换填写方式…');
+      };
+
+      const build = async () => {
+        const data = await run('timeline/build', { bookId: book.id, strategy: 'append' }, '正在读取世界观与角色，整理时间线…');
+        if (!data) return;
+        if (data.status) setStatus(data.status);
+        toast(data.added ? `新增 ${data.added} 条事件（${data.chunks} 段）` : '没有发现新的时间线事件');
+      };
+
+      const startNew = () => setSheet({ editing: true, draft: { id: null, title: '', at: '', content: '' } });
+      const openDetail = (entry) => setSheet({ editing: false, entry });
+      const editEntry = (entry) => setSheet({ editing: true, draft: { id: entry.id, title: entry.title, at: entry.at || '', content: entry.content } });
+
+      const save = async () => {
+        const draft = sheet?.draft;
+        if (!draft) return;
+        const data = await run('entry/save', {
+          bookId: book.id, module: 'timeline',
+          entry: { id: draft.id, title: draft.title, at: draft.at, content: draft.content },
+        }, '保存中…');
+        if (data) { setSheet(null); toast(draft.id ? '已保存' : '已加入时间线'); }
+      };
+
+      const removeEntry = (entry) => {
+        openModal({
+          title: '删除时间线条目',
+          description: `删除「${entry.title || '未命名'}」后无法恢复。`,
+          confirmText: '删除',
+          danger: true,
+          onConfirm: async () => {
+            const data = await run('entry/delete', { bookId: book.id, module: 'timeline', id: entry.id }, '删除中…');
+            if (data) setSheet(null);
+          },
+        });
+      };
+
+      const sheetBody = sheet
+        ? h('div', {
+          className: 'sbk-overlay',
+          onMouseDown: (event) => { if (event.target === event.currentTarget) setSheet(null); },
+        }, h('div', { className: 'sbk-sheet' }, sheet.editing ? [
+          h('h3', { key: 'h' }, sheet.draft.id ? '编辑时间线条目' : '新增时间线条目'),
+          h(Field, { key: 't', label: '标题' },
+            h('input', {
+              className: 'sbk-input', value: sheet.draft.title,
+              onChange: (event) => setSheet({ ...sheet, draft: { ...sheet.draft, title: event.target.value } }),
+            })),
+          h(Field, { key: 'a', label: '故事内时间', hint: '排序依据，可写「纪元前300年」「第10年·春」' },
+            h('input', {
+              className: 'sbk-input', value: sheet.draft.at, placeholder: '例如：第 3 年·春',
+              onChange: (event) => setSheet({ ...sheet, draft: { ...sheet.draft, at: event.target.value } }),
+            })),
+          h(Field, { key: 'c', label: '内容' },
+            h('textarea', {
+              className: 'sbk-area sbk-mono', style: { minHeight: 160 }, value: sheet.draft.content,
+              onChange: (event) => setSheet({ ...sheet, draft: { ...sheet.draft, content: event.target.value } }),
+            })),
+          h('div', { key: 'x', className: 'sbk-sheet-actions' },
+            h(Btn, { variant: 'ghost', onClick: () => setSheet(null) }, '取消'),
+            h(Btn, { variant: 'primary', onClick: save, disabled: busy }, '保存')),
+        ] : [
+          h('h3', { key: 'h' }, sheet.entry.title || '未命名条目'),
+          h('div', { key: 'm', className: 'sbk-sheet-meta' },
+            `${sheet.entry.at || '未标注时间'} · ${sheet.entry.source === 'ai' ? 'AI 提取' : sheet.entry.source === 'auto' ? '对话记忆' : '手动'}`
+            + (sheet.entry.conversationId ? ' · 本对话' : ' · 共享')),
+          h('div', { key: 'b', className: 'sbk-sheet-body' }, sheet.entry.content || '（空）'),
+          h('div', { key: 'x', className: 'sbk-sheet-actions' },
+            h(Btn, { variant: 'danger', size: 'sm', onClick: () => removeEntry(sheet.entry) }, '删除'),
+            h(Btn, { variant: 'ghost', onClick: () => setSheet(null) }, '关闭'),
+            h(Btn, { variant: 'primary', onClick: () => editEntry(sheet.entry) }, '编辑')),
+        ]))
+        : null;
+
+      return h('div', { className: 'sbk-tl' },
+        h('div', { className: 'sbk-tl-bar' },
+          h('div', { className: 'sbk-seg' },
+            [{ key: 'manual', label: '手动填写' }, { key: 'auto', label: '自动生成' }].map((item) => h('button', {
+              key: item.key, type: 'button', className: 'sbk-seg-btn', 'data-active': mode === item.key,
+              disabled: busy, onClick: () => switchMode(item.key),
+            }, item.label))),
+          h('button', {
+            type: 'button', className: 'sbk-scope', 'data-active': scope === 'current',
+            onClick: () => setScope(scope === 'current' ? 'all' : 'current'),
+          }, scope === 'current' ? '仅本对话' : '全部对话'),
+          status?.stale ? h('span', { className: 'sbk-warn' }, '⚠ 设定有更新') : null,
+          h('span', { className: 'sbk-spacer' }),
+          h(Btn, { size: 'sm', variant: 'ghost', onClick: build, disabled: busy }, '✧ 自动整理'),
+          h(Btn, { size: 'sm', onClick: startNew, disabled: busy }, '＋ 新增')),
+        mode === 'auto'
+          ? h('div', { className: 'sbk-card sbk-card--tint', style: { marginBottom: 14 } },
+            h('h3', null, '自动整理时间线'),
+            h('div', { className: 'sbk-hint' },
+              `来源：世界观 ${status?.counts?.world ?? 0} 条 · 角色 ${status?.counts?.character ?? 0} 条；`
+              + `现有事件 ${status?.counts?.events ?? 0} 条（AI ${status?.counts?.aiEvents ?? 0} / 手动 ${status?.counts?.manualEvents ?? 0}）。`
+              + (status?.syncedAt ? ` 上次整理 ${new Date(status.syncedAt).toLocaleString('zh-CN', { hour12: false })}。` : ' 还没有自动生成过。')),
+            h('div', { className: 'sbk-hint' }, '生成的事件只补不删；手动条目与对话记忆不会被覆盖。'))
+          : null,
+        sorted.length === 0
+          ? h('div', { className: 'sbk-empty', style: { padding: '36px 12px' } },
+            h('div', { className: 'sbk-empty-glyph' }, '⟳'),
+            h('b', null, '时间线还是空的'),
+            h('div', { className: 'sbk-hint', style: { maxWidth: 360 } }, '可以手动新增，也可以切到「自动生成」让 AI 读取世界观与角色提取事件。'),
+            h('div', { className: 'sbk-inline' },
+              h(Btn, { variant: 'primary', size: 'sm', onClick: startNew }, '＋ 新增条目'),
+              h(Btn, { size: 'sm', variant: 'ghost', onClick: build, disabled: busy }, '✧ 自动整理')))
+          : h('div', { className: 'sbk-axis' },
+            sorted.map((entry, index) => h('div', { key: entry.id, className: 'sbk-axis-item', 'data-side': index % 2 === 0 ? 'left' : 'right' },
+              h('span', { className: 'sbk-axis-dot' }),
+              h('button', { type: 'button', className: 'sbk-axis-card', onClick: () => openDetail(entry) },
+                h('div', { className: 'sbk-axis-time' }, entry.at || '未标注时间'),
+                h('div', { className: 'sbk-axis-title' }, entry.title || '未命名条目'),
+                h('div', { className: 'sbk-axis-snippet' }, String(entry.content || '').replace(/\s+/g, ' ') || '（空）'),
+                h('div', { className: 'sbk-axis-tags' },
+                  entry.source === 'ai' ? h('span', { className: 'sbk-kw' }, 'AI 提取') : null,
+                  entry.kind === 'memory' ? h('span', { className: 'sbk-kw' }, '对话记忆') : null,
+                  entry.kind === 'chapter' ? h('span', { className: 'sbk-kw' }, '章节梗概') : null,
+                  entry.conversationId ? h('span', { className: 'sbk-kw sbk-kw--pin' }, '本对话') : null))))),
+
+        sheetBody);
+    }
+
     function ChatHeader({ conversation, busy, onBack, onRename, onSettings, onMenu, onSwitch }) {
       return h('div', { className: 'sbk-chathead' },
-        h('button', { type: 'button', className: 'sbk-iconbtn', onClick: onBack, title: '返回故事列表' }, '‹'),
+        h('button', { type: 'button', className: 'sbk-iconbtn sbk-backbtn', onClick: onBack, title: '返回故事列表' }, '‹ 列表'),
         h('button', { type: 'button', className: 'sbk-chat-title', onClick: onRename, title: '点击重命名' },
           conversation.title,
           h('span', { className: 'sbk-chat-sub' }, conversationModeLabel(conversation.mode))),
@@ -1030,7 +1231,7 @@ window.__ModuleLoader__.load({
         h(Btn, { size: 'sm', variant: 'ghost', onClick: onSettings, disabled: busy }, '⚙ 设置'));
     }
 
-    function ChatPanel({ book, conversation, busy, run, toast, openModal, applyResponse, openMenu, onOpenConversation, onCreateConversation, onRenameConversation, onDeleteConversation, onRegenerate, onBranch }) {
+    function ChatPanel({ book, conversation, busy, run, toast, openModal, applyResponse, openMenu, onOpenConversation, onCreateConversation, onRenameConversation, onDeleteConversation, onRegenerate, onBranch, onEditMessage }) {
       const [input, setInput] = useState('');
       const [streaming, setStreaming] = useState(null);
       const scrollRef = useRef(null);
@@ -1114,6 +1315,7 @@ window.__ModuleLoader__.load({
                 key: message.id,
                 className: 'sbk-msg sbk-msg--user',
                 ...pressProps(openMenu, [
+                  { label: '编辑这条消息', onClick: () => onEditMessage(conversation, message) },
                   { label: '复制', onClick: () => copyText(message.text) },
                   { label: '从这里分支', onClick: () => onBranch(conversation, message.id) },
                 ]),
@@ -1320,6 +1522,19 @@ window.__ModuleLoader__.load({
         if (data) toast(data.memoryAdded > 0 ? `已重新生成，+${data.memoryAdded} 条记忆` : '已重新生成');
       };
 
+      const editMessage = (target, message) => {
+        setModal({
+          kind: 'msg-edit',
+          conversationId: target.id,
+          messageId: message.id,
+          value: message.text,
+          truncate: true,
+          title: '编辑这条消息',
+          description: '改完可以让 AI 从这条重新往下写。勾选「同时删除之后的内容」会清掉后面的消息与它们产生的记忆。',
+          confirmText: '保存',
+        });
+      };
+
       const branchFrom = async (target, messageId) => {
         if (!target || !messageId) { toast('请选择一条消息再分支', 'error'); return; }
         const data = await run('chat/branch', { bookId: book.id, conversationId: target.id, messageId }, '正在创建分支…');
@@ -1356,6 +1571,10 @@ window.__ModuleLoader__.load({
         if (!modal) return;
         const current = modal;
         setModal(null);
+        if (typeof current.onConfirm === 'function') {
+          await current.onConfirm();
+          return;
+        }
         if (current.kind === 'create') {
           const data = await run('book/create', { title: current.value, template: current.template !== false }, '创建中…');
           if (data) { setTab('basic'); toast('故事书已创建，可以先补充基础设定'); }
@@ -1387,6 +1606,15 @@ window.__ModuleLoader__.load({
             setStoryListMode(true);
             toast(`对话已删除${data.removedMemories ? `（同时清理 ${data.removedMemories} 条记忆）` : ''}`);
           }
+        } else if (current.kind === 'msg-edit') {
+          const data = await run('chat/edit-message', {
+            bookId: book.id,
+            conversationId: current.conversationId,
+            messageId: current.messageId,
+            text: current.value,
+            truncateAfter: Boolean(current.truncate),
+          }, '保存消息…');
+          if (data) toast(data.removed ? `已保存，并清掉 ${data.removed} 条后续消息` : '已保存');
         } else if (current.kind === 'conv-settings') {
           const data = await run('conversation/update', {
             bookId: book.id, id: current.id,
@@ -1454,8 +1682,11 @@ window.__ModuleLoader__.load({
                     onDeleteConversation: deleteConversation,
                     onRegenerate: regenerate,
                     onBranch: branchFrom,
+                    onEditMessage: editMessage,
                   }))
-                : tab === 'craft'
+                : tab === 'timeline'
+                  ? h(TimelinePanel, { book, busy, run, toast, openModal: setModal, activeConversationId: conversation?.id || null })
+                  : tab === 'craft'
                   ? h(CraftPanel, { book, busy, run, toast })
                   : h(ModulePanel, { book, module: tab, busy, run, toast, openModal: setModal, activeConversationId: conversation?.id || null })),
         menu
@@ -1502,6 +1733,18 @@ window.__ModuleLoader__.load({
                 placeholder: modal.placeholder,
                 onChange: (event) => setModal({ ...modal, value: event.target.value }),
               }))
+            : modal.kind === 'msg-edit'
+              ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+                h('textarea', {
+                  className: 'sbk-area', style: { minHeight: 120 }, value: modal.value,
+                  onChange: (event) => setModal({ ...modal, value: event.target.value }),
+                }),
+                h('label', { className: 'sbk-inline', style: { cursor: 'pointer' } },
+                  h('input', {
+                    type: 'checkbox', checked: Boolean(modal.truncate),
+                    onChange: (event) => setModal({ ...modal, truncate: event.target.checked }),
+                  }),
+                  h('span', null, '同时删除这条之后的消息（推荐，剧情从这点重写）')))
             : modal.kind === 'conv-settings'
               ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 10 } },
                 h(Field, { label: '温度 temperature', hint: '越高越天马行空，0-2' },
