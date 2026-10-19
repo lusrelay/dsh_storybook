@@ -15,7 +15,7 @@ import { homedir } from 'node:os';
 export const inject = ['webServer'];
 
 const API_PREFIX = '/storybook';
-const BUILD = '1.4.0';
+const BUILD = '1.5.0';
 const MODULE_KEYS = ['basic', 'world', 'character', 'timeline', 'craft'];
 const MODULE_LABEL = {
   basic: '基础设定',
@@ -133,12 +133,14 @@ function normalizeBook(raw) {
     for (const entry of entries) {
       if (!Array.isArray(entry.keywords)) entry.keywords = [];
       entry.always = Boolean(entry.always);
+      if (!['past', 'present', 'future', ''].includes(entry.phase)) entry.phase = '';
+      if (entry.order !== null && entry.order !== undefined && !Number.isFinite(Number(entry.order))) entry.order = null;
     }
     book.modules[key] = { entries };
   }
   book.chat = book.chat && typeof book.chat === 'object' ? book.chat : { messages: [] };
   book.chat.messages = Array.isArray(book.chat.messages) ? book.chat.messages : [];
-  book.settings = { styleHint: '', autoMemory: true, knowledgeBudget: 12000, residentBudget: 2600, retrievalBudget: 4200, retrievalLimit: 10, maxEntriesPerConvert: 400, timelineMode: 'manual', promptBudget: 2400, ...(book.settings || {}) };
+  book.settings = { styleHint: '', autoMemory: true, knowledgeBudget: 12000, residentBudget: 2600, retrievalBudget: 4200, retrievalLimit: 10, maxEntriesPerConvert: 400, timelineMode: 'manual', promptBudget: 2400, storyNow: '', ...(book.settings || {}) };
   book.timelineMeta = { syncedAt: 0, sourceHash: '', strategy: 'append', added: 0, chunks: 0, ...(book.timelineMeta || {}) };
   book.player = { name: '', desc: '', ...(book.player || {}) };
   book.gameState = { time: '', location: '', status: [], ...(book.gameState || {}) };
@@ -757,11 +759,14 @@ function normalizeItems(list, limit = 24) {
     const content = String(item?.content ?? item?.desc ?? item?.description ?? '').trim().slice(0, 4000);
     const at = String(item?.at ?? item?.time ?? '').trim().slice(0, 40);
     const keywords = cleanKeywords(item?.keywords ?? item?.tags ?? []);
+    const phase = ['past', 'present', 'future'].includes(item?.phase) ? item.phase : '';
+    const orderValue = Number(item?.order);
+    const order = Number.isFinite(orderValue) ? orderValue : null;
     if (!title && !content) continue;
     const key = `${title}|${content.slice(0, 40)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    items.push({ title: title || content.slice(0, 20), content, at, keywords });
+    items.push({ title: title || content.slice(0, 20), content, at, keywords, phase, order });
     if (items.length >= limit) break;
   }
   return items;
@@ -814,6 +819,34 @@ function craftPrompt(target, part, index, total) {
   ].filter(Boolean).join('\n');
 }
 
+function memoryKeywords(book, text, at) {
+  const source = String(text || '');
+  const words = new Set(extractKeywords(at || '', source));
+  for (const module of ['character', 'world']) {
+    for (const entry of book.modules[module].entries) {
+      for (const word of keywordList(entry)) {
+        if (word.length >= 2 && word.length <= 12 && source.includes(word)) words.add(word);
+      }
+    }
+  }
+  if (at) words.add(String(at).slice(0, 20));
+  if (words.size < 2) {
+    // 短句兜底：取几段连续汉字当检索词
+    for (const run of source.match(/[\u4e00-\u9fa5]{2,6}/g) || []) {
+      words.add(run);
+      if (words.size >= 4) break;
+    }
+  }
+  return cleanKeywords([...words]).slice(0, 8);
+}
+
+function inferPhase(at) {
+  const text = String(at || '');
+  if (/(纪元前|公元前|远古|曾经|过去|原先)/.test(text)) return 'past';
+  if (/(未来|将来|之后|计划|预言|即将|明日)/.test(text)) return 'future';
+  return 'past';
+}
+
 /* ------------------------------------------------------------- 时间线状态 */
 
 function timelineSourceHash(book) {
@@ -831,8 +864,17 @@ function timelineStatus(book) {
   const sourceHash = timelineSourceHash(book);
   const meta = book.timelineMeta || {};
   const timeline = book.modules.timeline.entries;
+  const now = book.settings.storyNow || '';
+  const phaseCounts = { past: 0, present: 0, future: 0, undefined: 0 };
+  for (const entry of timeline) {
+    if (entry.kind !== 'event' && entry.kind !== 'memory' && entry.kind !== 'chapter') continue;
+    if (entry.phase && phaseCounts[entry.phase] !== undefined) phaseCounts[entry.phase] += 1;
+    else phaseCounts.undefined += 1;
+  }
   return {
     mode: book.settings.timelineMode === 'auto' ? 'auto' : 'manual',
+    now,
+    phaseCounts,
     stale: !meta.syncedAt || meta.sourceHash !== sourceHash,
     syncedAt: meta.syncedAt || 0,
     meta: { strategy: meta.strategy || 'append', added: meta.added || 0, chunks: meta.chunks || 0 },
@@ -882,6 +924,10 @@ function storyPrompt(book, conversation, message, history, knowledge) {
     '3. ……',
     '',
     '后续发展提示固定 3-5 条，每条一句话，是读者接下来可以采取的行动或可以探索的方向，彼此要有明显差异。',
+    '',
+    '【故事时间】',
+    `现在：${book.settings.storyNow || '（未设定，可在时间线页设置）'}。故事从这个时间点继续；更早的事件只作为背景与回忆，未来尚未发生。`,
+    '除非读者明确要求回叙过去或预叙未来，否则不要跳到其它时间点。',
     '',
     '【知识与设定】',
     knowledge.text || '（暂无设定，请根据读者输入即兴展开，并保持前后一致）',
@@ -949,6 +995,10 @@ function gamePrompt(book, conversation, message, history, knowledge) {
     `时间：${state.time || '（未知）'}`,
     `地点：${state.location || '（未知）'}`,
     statusSnapshot,
+    '',
+    '【故事时间】',
+    `现在：${book.settings.storyNow || '（未设定，可在时间线页设置）'}。故事从这个时间点继续；更早的事件只作为背景与记忆，未来尚未发生。`,
+    '除非玩家明确要求回叙过去或预叙未来，否则不要跳到其它时间点。',
     '',
     '【知识与设定】',
     knowledge.text || '（暂无设定，请即兴建立一个自洽的世界）',
@@ -1023,6 +1073,8 @@ function makeEntry(module, input, source = 'manual') {
     at: cleanText(input.at, 60).trim(),
     keywords: cleanKeywords(input.keywords),
     always: Boolean(input.always),
+    phase: ['past', 'present', 'future'].includes(input.phase) ? input.phase : '',
+    order: Number.isFinite(input.order) ? Number(input.order) : null,
     source: input.source || source,
     createdAt: stamp,
     updatedAt: stamp,
@@ -1298,6 +1350,41 @@ export function apply(ctx) {
       return { status: timelineStatus(book) };
     },
 
+    async 'timeline/now'(payload) {
+      const book = await loadBook(payload.bookId);
+      book.settings.storyNow = cleanText(payload.now, 60).trim();
+      await saveBook(book);
+      return { book, status: timelineStatus(book) };
+    },
+
+    async 'timeline/reorder'(payload) {
+      const book = await loadBook(payload.bookId);
+      const direction = payload.direction === 'down' ? 'down' : 'up';
+      const entries = book.modules.timeline.entries.filter(
+        (entry) => entry.kind === 'event' || entry.kind === 'memory' || entry.kind === 'chapter',
+      );
+      const target = entries.find((entry) => entry.id === payload.id);
+      if (!target) throw new Error('找不到该时间线条目');
+      const phase = target.phase || '';
+      const same = entries.filter((entry) => (entry.phase || '') === phase);
+      same.forEach((entry, index) => {
+        if (!Number.isFinite(Number(entry.order))) entry.order = index;
+      });
+      same.sort((left, right) => Number(left.order) - Number(right.order));
+      const index = same.findIndex((entry) => entry.id === target.id);
+      const swapIndex = direction === 'up' ? index - 1 : index + 1;
+      if (swapIndex < 0 || swapIndex >= same.length) {
+        await saveBook(book);
+        return { book, moved: false };
+      }
+      const other = same[swapIndex];
+      const tmp = target.order;
+      target.order = other.order;
+      other.order = tmp;
+      await saveBook(book);
+      return { book, moved: true };
+    },
+
     async 'timeline/build'(payload) {
       const book = await loadBook(payload.bookId);
       const strategy = payload.strategy === 'replace' ? 'replace' : 'append';
@@ -1328,8 +1415,10 @@ export function apply(ctx) {
           '',
           '要求：',
           '1. 每条是一个独立事件：at 为故事内时间（如「纪元前300年」「第3年·春」），title 不超过 20 字，content 80 字以内说明发生了什么及其影响。',
-          '2. 只输出 JSON 数组：[{"at":"...","title":"...","content":"...","keywords":["..."]}]',
-          '3. 这部分最多 14 条，按时间升序；不要重复，不要输出 JSON 以外的内容。',
+          '2. 每条必须打时间标记 phase：past=故事开始前已发生，present=当前正在发生，future=尚未发生的计划/预言/伏笔。',
+          '3. order 为该阶段内的升序序号（从 0 开始），用于同阶段排序。',
+          '4. 只输出 JSON 数组：[{"at":"...","phase":"past|present|future","order":0,"title":"...","content":"...","keywords":["..."]}]',
+          '5. 这部分最多 14 条；不要重复，不要输出 JSON 以外的内容。',
         ].join('\n');
         const call = () => runModel(ctx, {
           system: '你是严谨的故事设定编辑，只输出 JSON，不输出任何解释。',
@@ -1369,7 +1458,12 @@ export function apply(ctx) {
       for (const item of items) {
         if (!item.title && !item.content) continue;
         if (list.some((entry) => entry.title === item.title && entry.content === item.content)) continue;
-        const entry = makeEntry('timeline', { ...item, kind: 'event', source: 'ai' }, 'ai');
+        const entry = makeEntry('timeline', {
+          ...item,
+          phase: item.phase || inferPhase(item.at),
+          kind: 'event',
+          source: 'ai',
+        }, 'ai');
         entry.timelineOrder = created.length;
         list.push(entry);
         created.push(entry);
@@ -1744,7 +1838,8 @@ export function apply(ctx) {
           content: text,
           kind: 'memory',
           at: parsed.time || conversation.gameState.time || '',
-          keywords: extractKeywords(parsed.time || '', text),
+          keywords: memoryKeywords(book, text, parsed.time),
+          phase: 'present',
         }, 'auto');
         entry.sourceId = assistant.id;
         entry.conversationId = conversation.id;
@@ -1764,7 +1859,8 @@ export function apply(ctx) {
           title,
           content: `本章梗概：${excerpt}${excerpt.length >= 260 ? '…' : ''}${parsed.hints?.length ? `\n后续伏笔：${parsed.hints.slice(0, 3).join('；')}` : ''}`,
           kind: 'chapter',
-          keywords: extractKeywords(title, parsed.hints?.join('、') || excerpt),
+          keywords: memoryKeywords(book, `${title} ${excerpt} ${(parsed.hints || []).join(' ')}`, ''),
+          phase: 'present',
         }, 'auto');
         entry.sourceId = assistant.id;
         entry.conversationId = conversation.id;

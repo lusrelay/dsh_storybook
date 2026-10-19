@@ -200,7 +200,14 @@ const sortedList = S.sortTimeline([
   { id: 'c', at: '第3年', title: 'C' },
   { id: 'd', at: '', title: 'D', createdAt: 1 },
 ]);
-check('按故事内时间排序（纪元前 → 第3年 → 第10年 → 无时间）', sortedList.map((item) => item.id).join('') === 'bcad', sortedList.map((item) => item.id));
+check('同阶段内按故事内时间排序（纪元前 → 第3年 → 第10年 → 无时间）', sortedList.map((item) => item.id).join('') === 'bcad', sortedList.map((item) => item.id));
+const phaseSorted = S.sortTimeline([
+  { id: 'f', phase: 'future', at: '第1年', order: 0 },
+  { id: 'p', phase: 'present', at: '第9年', order: 0 },
+  { id: 'q', phase: 'past', at: '第8年', order: 1 },
+  { id: 'r', phase: 'past', at: '第2年', order: 0 },
+]);
+check('按 过去 → 现在 → 未来 分组排序', phaseSorted.map((item) => item.id).join('') === 'rqpf', phaseSorted.map((item) => item.id));
 out = render('TimelinePanel', S.TimelinePanel, { book: emptyBook, busy: '', run: async () => null, toast: () => {}, openModal: () => {}, activeConversationId: 'conv_1' });
 check('本对话记忆可见', out.flat.includes('第1章 雨夜'));
 check('别的对话记忆被过滤', !out.flat.includes('别的对话的记忆'));
@@ -209,6 +216,8 @@ check('有范围切换', out.flat.includes('仅本对话'));
 check('渲染竖轴节点', findAll(out.tree, (node) => String(node.props?.className || '').includes('sbk-axis-card')).length === 2,
   findAll(out.tree, (node) => String(node.props?.className || '').includes('sbk-axis-card')).length);
 check('有自动整理入口', out.flat.includes('自动整理'));
+check('按阶段分组显示', out.flat.includes('过去') && out.flat.includes('现在'));
+check('有「现在」设置入口', out.flat.includes('现在：'));
 
 console.log('\n[8] 长按菜单的点击抑制');
 let opened = null;

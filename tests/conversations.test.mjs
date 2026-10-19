@@ -106,6 +106,9 @@ check('记忆带 conversationId', timeline.length >= 2 && convIds.size >= 2, [..
 check('每个对话各自一份', timeline.filter((e) => e.conversationId === conv1.id).length >= 1 && timeline.filter((e) => e.conversationId === conv2.id).length >= 1);
 const status = (await api('timeline/status', { bookId: book.id })).status;
 check('状态按当前对话计数', status.counts.memories >= 1 && status.counts.conversations === 2, status.counts);
+const chapters = timeline.filter((entry) => entry.kind === 'chapter');
+check('对话记忆标为「现在」', chapters.every((entry) => entry.phase === 'present'), chapters.map((entry) => entry.phase));
+check('对话记忆带关键词', chapters.every((entry) => Array.isArray(entry.keywords) && entry.keywords.length > 0), chapters.map((entry) => entry.keywords));
 
 console.log('\n[5] 分支');
 const lastAssistant = c1.messages[c1.messages.length - 1];

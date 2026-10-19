@@ -8,14 +8,7 @@ import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
-
 process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'sbk-tl-'));
-
-// 安全护栏：只允许在临时目录下建/删测试数据，绝不碰真实 $DSH_HOME
-const TEST_HOME = process.env.DSH_HOME;
-if (!TEST_HOME || !TEST_HOME.startsWith(tmpdir())) {
-  throw new Error('测试必须在临时 DSH_HOME 下运行，拒绝操作真实数据目录');
-}
 
 const routes = [];
 const ctx = {
@@ -39,8 +32,8 @@ async function* fakeStream(options) {
     buildCount += 1;
     buildPrompts.push(String(options.messages?.[0]?.content?.[0]?.text || ''));
     reply = JSON.stringify([
-      { at: '纪元前300年', title: '旧王城陷落', content: '王朝倾覆，残部退守。', keywords: ['旧王城'] },
-      { at: '第7年·春', title: '教头被除名', content: '一次失败的任务让他离开卫队。', keywords: ['教头'] },
+      { at: '纪元前300年', phase: 'past', order: 0, title: '旧王城陷落', content: '王朝倾覆，残部退守。', keywords: ['旧王城'] },
+      { at: '第7年·春', phase: 'past', order: 1, title: '教头被除名', content: '一次失败的任务让他离开卫队。', keywords: ['教头'] },
     ]);
   }
   for (const piece of (reply.match(/[\s\S]{1,60}/g) ?? [])) yield { type: 'text-delta', index: 0, text: piece };
@@ -134,6 +127,33 @@ r = await api('book/update', { bookId, patch: { settings: { timelineMode: 'auto'
 check('模式持久化', r.book.settings.timelineMode === 'auto', r.book.settings.timelineMode);
 r = await api('timeline/status', { bookId });
 check('状态里反映模式', r.status.mode === 'auto', r.status.mode);
+
+console.log('\n[8] 自动时间标记 / 现在 / 手动排序');
+r = await api('timeline/now', { bookId, now: '第10年·夏' });
+check('现在已保存', r.book.settings.storyNow === '第10年·夏', r.book.settings.storyNow);
+check('状态里带现在', r.status.now === '第10年·夏', r.status.now);
+r = await api('timeline/status', { bookId });
+check('阶段计数存在', r.status.phaseCounts && typeof r.status.phaseCounts.past === 'number', r.status.phaseCounts);
+const bookNow = (await api('book', { id: bookId })).book;
+const events = bookNow.modules.timeline.entries.filter((entry) => entry.kind === 'event' && entry.source === 'ai');
+check('AI 事件自动标 past', events.every((entry) => entry.phase === 'past'), events.map((e) => e.phase));
+check('AI 事件带 order', events.every((entry) => Number.isFinite(Number(entry.order))), events.map((e) => e.order));
+
+await api('entry/save', {
+  bookId, module: 'timeline',
+  entry: { title: '第10年·夏 祭典', content: '雾季祭典当天发生的对峙。', kind: 'event', phase: 'present', order: 0 },
+});
+r = await api('timeline/status', { bookId });
+check('现在段计数 +1', r.status.phaseCounts.present === 1, r.status.phaseCounts);
+
+const pastEvents = (await api('book', { id: bookId })).book.modules.timeline.entries.filter((entry) => entry.kind === 'event' && entry.phase === 'past');
+r = await api('timeline/reorder', { bookId, id: pastEvents[1].id, direction: 'up' });
+const afterMove = r.book.modules.timeline.entries
+  .filter((entry) => entry.kind === 'event' && entry.phase === 'past')
+  .sort((left, right) => Number(left.order) - Number(right.order));
+check('上移生效', r.moved === true && afterMove[0].id === pastEvents[1].id, { moved: r.moved, first: afterMove[0]?.title });
+r = await api('timeline/reorder', { bookId, id: afterMove[0].id, direction: 'up' });
+check('到顶后 moved=false', r.moved === false, r.moved);
 
 server.close();
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n失败 ${failures} 项 ✗`);

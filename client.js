@@ -182,6 +182,14 @@ window.__ModuleLoader__.load({
 .sbk-tl-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
 .sbk-axis{position:relative;max-width:820px;margin:0 auto;padding-left:24px}
 .sbk-axis:before{content:'';position:absolute;left:8px;top:6px;bottom:6px;width:1px;background:var(--sbk-line-strong)}
+.sbk-nowbtn{height:24px;padding:0 10px;border-radius:12px;border:.5px solid var(--sbk-line-strong);background:transparent;color:var(--sbk-text);font:inherit;font-size:11.5px;cursor:pointer;white-space:nowrap}
+.sbk-nowbtn:hover{border-color:var(--sbk-accent)}
+.sbk-axis-group{position:relative;margin-bottom:18px}
+.sbk-axis-phase{display:flex;align-items:baseline;gap:8px;margin:0 0 8px;font-size:12.5px;font-weight:600}
+.sbk-axis-phase .sbk-hint{font-weight:400}
+.sbk-axis-group[data-phase=past] .sbk-axis-phase{color:var(--sbk-faint)}
+.sbk-axis-group[data-phase=present] .sbk-axis-phase{color:var(--sbk-accent)}
+.sbk-axis-group[data-phase=future] .sbk-axis-phase{color:var(--sbk-warn,#c27c0e)}
 .sbk-axis-item{position:relative;margin-bottom:12px}
 .sbk-axis-dot{position:absolute;left:-20px;top:15px;width:9px;height:9px;border-radius:50%;background:var(--sbk-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--sbk-accent) 16%,transparent)}
 .sbk-axis-card{display:block;width:100%;text-align:left;border:.5px solid var(--sbk-line);background:var(--dsw-alias-bg-base,#fff);color:inherit;font:inherit;padding:9px 12px;border-radius:12px;cursor:pointer;transition:border-color .15s,background .15s}
@@ -1065,8 +1073,24 @@ window.__ModuleLoader__.load({
       return null;
     }
 
+    const PHASE_RANK = { past: 0, present: 1, future: 2, '': 1 };
+
+    function effectivePhase(entry) {
+      if (entry.phase) return entry.phase;
+      if (entry.kind === 'memory' || entry.kind === 'chapter') return 'present';
+      return 'past';
+    }
+
     function sortTimeline(entries) {
       return [...entries].sort((left, right) => {
+        const pa = PHASE_RANK[effectivePhase(left)] ?? 1;
+        const pb = PHASE_RANK[effectivePhase(right)] ?? 1;
+        if (pa !== pb) return pa - pb;
+        const oa = Number.isFinite(Number(left.order)) ? Number(left.order) : null;
+        const ob = Number.isFinite(Number(right.order)) ? Number(right.order) : null;
+        if (oa !== null && ob !== null && oa !== ob) return oa - ob;
+        if (oa !== null && ob === null) return -1;
+        if (oa === null && ob !== null) return 1;
         const a = timelineSortValue(left.at);
         const b = timelineSortValue(right.at);
         if (a !== null && b !== null && a !== b) return a - b;
@@ -1081,6 +1105,7 @@ window.__ModuleLoader__.load({
       const [status, setStatus] = useState(null);
       const [sheet, setSheet] = useState(null);
       const mode = book.settings?.timelineMode === 'auto' ? 'auto' : 'manual';
+      const storyNow = book.settings?.storyNow || '';
 
       useEffect(() => {
         let alive = true;
@@ -1095,6 +1120,11 @@ window.__ModuleLoader__.load({
         ? all.filter((entry) => !entry.conversationId || entry.conversationId === activeConversationId)
         : all;
       const sorted = sortTimeline(visible);
+      const groups = [
+        { key: 'past', label: '过去', hint: '故事开始前已发生' },
+        { key: 'present', label: '现在', hint: storyNow ? `当前时间：${storyNow}` : '当前时间未设定' },
+        { key: 'future', label: '未来', hint: '计划 / 预言 / 伏笔' },
+      ].map((group) => ({ ...group, items: sorted.filter((entry) => effectivePhase(entry) === group.key) }));
 
       const switchMode = async (next) => {
         if (next === mode) return;
@@ -1105,21 +1135,41 @@ window.__ModuleLoader__.load({
         const data = await run('timeline/build', { bookId: book.id, strategy: 'append' }, '正在读取世界观与角色，整理时间线…');
         if (!data) return;
         if (data.status) setStatus(data.status);
-        toast(data.added ? `新增 ${data.added} 条事件（${data.chunks} 段）` : '没有发现新的时间线事件');
+        toast(data.added ? `新增 ${data.added} 条事件（${data.chunks} 段，已自动标注时间）` : '没有发现新的时间线事件');
       };
 
-      const startNew = () => setSheet({ editing: true, draft: { id: null, title: '', at: '', content: '' } });
-      const openDetail = (entry) => setSheet({ editing: false, entry });
-      const editEntry = (entry) => setSheet({ editing: true, draft: { id: entry.id, title: entry.title, at: entry.at || '', content: entry.content } });
+      const startNew = () => setSheet({ mode: 'edit', draft: { id: null, title: '', at: '', content: '', phase: 'present', order: null } });
+      const openDetail = (entry) => setSheet({ mode: 'view', entry });
+      const editEntry = (entry) => setSheet({
+        mode: 'edit',
+        draft: {
+          id: entry.id, title: entry.title, at: entry.at || '', content: entry.content,
+          phase: effectivePhase(entry), order: entry.order ?? null,
+        },
+      });
 
       const save = async () => {
         const draft = sheet?.draft;
         if (!draft) return;
         const data = await run('entry/save', {
           bookId: book.id, module: 'timeline',
-          entry: { id: draft.id, title: draft.title, at: draft.at, content: draft.content },
+          entry: {
+            id: draft.id, title: draft.title, at: draft.at, content: draft.content,
+            phase: draft.phase, order: Number.isFinite(Number(draft.order)) ? Number(draft.order) : null,
+          },
         }, '保存中…');
         if (data) { setSheet(null); toast(draft.id ? '已保存' : '已加入时间线'); }
+      };
+
+      const saveNow = async () => {
+        const data = await run('timeline/now', { bookId: book.id, now: sheet?.value || '' }, '保存当前时间…');
+        if (data) { if (data.status) setStatus(data.status); setSheet(null); toast('当前时间已保存'); }
+      };
+
+      const reorder = async (entry, direction) => {
+        const data = await run('timeline/reorder', { bookId: book.id, id: entry.id, direction }, '调整顺序…');
+        if (!data) return;
+        if (!data.moved) toast(direction === 'up' ? '已经在最前面了' : '已经在最后面了');
       };
 
       const removeEntry = (entry) => {
@@ -1135,41 +1185,74 @@ window.__ModuleLoader__.load({
         });
       };
 
+      const phaseChips = (current, onPick) => h('div', { className: 'sbk-inline' },
+        [{ key: 'past', label: '过去' }, { key: 'present', label: '现在' }, { key: 'future', label: '未来' }].map((item) => h('button', {
+          key: item.key,
+          type: 'button',
+          className: 'sbk-scope',
+          'data-active': current === item.key,
+          onClick: () => onPick(item.key),
+        }, item.label)));
+
       const sheetBody = sheet
         ? h('div', {
           className: 'sbk-overlay',
           onMouseDown: (event) => { if (event.target === event.currentTarget) setSheet(null); },
-        }, h('div', { className: 'sbk-sheet' }, sheet.editing ? [
-          h('h3', { key: 'h' }, sheet.draft.id ? '编辑时间线条目' : '新增时间线条目'),
-          h(Field, { key: 't', label: '标题' },
-            h('input', {
-              className: 'sbk-input', value: sheet.draft.title,
-              onChange: (event) => setSheet({ ...sheet, draft: { ...sheet.draft, title: event.target.value } }),
-            })),
-          h(Field, { key: 'a', label: '故事内时间', hint: '排序依据，可写「纪元前300年」「第10年·春」' },
-            h('input', {
-              className: 'sbk-input', value: sheet.draft.at, placeholder: '例如：第 3 年·春',
-              onChange: (event) => setSheet({ ...sheet, draft: { ...sheet.draft, at: event.target.value } }),
-            })),
-          h(Field, { key: 'c', label: '内容' },
-            h('textarea', {
-              className: 'sbk-area sbk-mono', style: { minHeight: 160 }, value: sheet.draft.content,
-              onChange: (event) => setSheet({ ...sheet, draft: { ...sheet.draft, content: event.target.value } }),
-            })),
-          h('div', { key: 'x', className: 'sbk-sheet-actions' },
-            h(Btn, { variant: 'ghost', onClick: () => setSheet(null) }, '取消'),
-            h(Btn, { variant: 'primary', onClick: save, disabled: busy }, '保存')),
-        ] : [
-          h('h3', { key: 'h' }, sheet.entry.title || '未命名条目'),
-          h('div', { key: 'm', className: 'sbk-sheet-meta' },
-            `${sheet.entry.at || '未标注时间'} · ${sheet.entry.source === 'ai' ? 'AI 提取' : sheet.entry.source === 'auto' ? '对话记忆' : '手动'}`
-            + (sheet.entry.conversationId ? ' · 本对话' : ' · 共享')),
-          h('div', { key: 'b', className: 'sbk-sheet-body' }, sheet.entry.content || '（空）'),
-          h('div', { key: 'x', className: 'sbk-sheet-actions' },
-            h(Btn, { variant: 'danger', size: 'sm', onClick: () => removeEntry(sheet.entry) }, '删除'),
-            h(Btn, { variant: 'ghost', onClick: () => setSheet(null) }, '关闭'),
-            h(Btn, { variant: 'primary', onClick: () => editEntry(sheet.entry) }, '编辑')),
-        ]))
+        }, h('div', { className: 'sbk-sheet' },
+          sheet.mode === 'now'
+            ? [
+              h('h3', { key: 'h' }, '设置「现在」'),
+              h('div', { key: 'd', className: 'sbk-hint' }, '故事从这个时间点继续推进；过去只作为背景与回忆，未来尚未发生。'),
+              h('input', {
+                key: 'i', className: 'sbk-input', value: sheet.value || '', placeholder: '例如：第10年·夏',
+                onChange: (event) => setSheet({ ...sheet, value: event.target.value }),
+              }),
+              h('div', { key: 'x', className: 'sbk-sheet-actions' },
+                h(Btn, { variant: 'ghost', onClick: () => setSheet(null) }, '取消'),
+                h(Btn, { variant: 'primary', onClick: saveNow, disabled: busy }, '保存')),
+            ]
+            : sheet.mode === 'edit'
+              ? [
+                h('h3', { key: 'h' }, sheet.draft.id ? '编辑时间线条目' : '新增时间线条目'),
+                h(Field, { key: 't', label: '标题' },
+                  h('input', {
+                    className: 'sbk-input', value: sheet.draft.title,
+                    onChange: (event) => setSheet({ ...sheet, draft: { ...sheet.draft, title: event.target.value } }),
+                  })),
+                h(Field, { key: 'a', label: '故事内时间', hint: '排序依据，可写「纪元前300年」「第10年·春」' },
+                  h('input', {
+                    className: 'sbk-input', value: sheet.draft.at, placeholder: '例如：第 3 年·春',
+                    onChange: (event) => setSheet({ ...sheet, draft: { ...sheet.draft, at: event.target.value } }),
+                  })),
+                h(Field, { key: 'p', label: '时间位置', hint: '决定它出现在时间轴的哪一段' },
+                  phaseChips(sheet.draft.phase, (phase) => setSheet({ ...sheet, draft: { ...sheet.draft, phase } }))),
+                h(Field, { key: 'c', label: '内容' },
+                  h('textarea', {
+                    className: 'sbk-area sbk-mono', style: { minHeight: 150 }, value: sheet.draft.content,
+                    onChange: (event) => setSheet({ ...sheet, draft: { ...sheet.draft, content: event.target.value } }),
+                  })),
+                h('div', { key: 'x', className: 'sbk-sheet-actions' },
+                  h(Btn, { variant: 'ghost', onClick: () => setSheet(null) }, '取消'),
+                  h(Btn, { variant: 'primary', onClick: save, disabled: busy }, '保存')),
+              ]
+              : [
+                h('h3', { key: 'h' }, sheet.entry.title || '未命名条目'),
+                h('div', { key: 'm', className: 'sbk-sheet-meta' },
+                  `${sheet.entry.at || '未标注时间'} · ${effectivePhase(sheet.entry) === 'past' ? '过去' : effectivePhase(sheet.entry) === 'future' ? '未来' : '现在'}`
+                  + ` · ${sheet.entry.source === 'ai' ? 'AI 提取' : sheet.entry.source === 'auto' ? '对话记忆' : '手动'}`
+                  + (sheet.entry.conversationId ? ' · 本对话' : ' · 共享')),
+                h('div', { key: 'b', className: 'sbk-sheet-body' }, sheet.entry.content || '（空）'),
+                sheet.entry.keywords?.length
+                  ? h('div', { key: 'k', className: 'sbk-kws' }, sheet.entry.keywords.slice(0, 8).map((word) => h('span', { key: word, className: 'sbk-kw' }, word)))
+                  : null,
+                h('div', { key: 'o', className: 'sbk-inline' },
+                  h('span', { className: 'sbk-label' }, '同阶段排序'),
+                  h(Btn, { size: 'sm', variant: 'ghost', onClick: () => reorder(sheet.entry, 'up'), disabled: busy }, '▲ 上移'),
+                  h(Btn, { size: 'sm', variant: 'ghost', onClick: () => reorder(sheet.entry, 'down'), disabled: busy }, '▼ 下移')),
+                h('div', { key: 'x', className: 'sbk-sheet-actions' },
+                  h(Btn, { variant: 'danger', size: 'sm', onClick: () => removeEntry(sheet.entry) }, '删除'),
+                  h(Btn, { variant: 'ghost', onClick: () => setSheet(null) }, '关闭'),
+                  h(Btn, { variant: 'primary', onClick: () => editEntry(sheet.entry) }, '编辑'))]))
         : null;
 
       return h('div', { className: 'sbk-tl' },
@@ -1183,6 +1266,10 @@ window.__ModuleLoader__.load({
             type: 'button', className: 'sbk-scope', 'data-active': scope === 'current',
             onClick: () => setScope(scope === 'current' ? 'all' : 'current'),
           }, scope === 'current' ? '仅本对话' : '全部对话'),
+          h('button', {
+            type: 'button', className: 'sbk-nowbtn', title: '设置故事「现在」的时间点',
+            onClick: () => setSheet({ mode: 'now', value: storyNow }),
+          }, `现在：${storyNow || '未设定'}`),
           status?.stale ? h('span', { className: 'sbk-warn' }, '⚠ 设定有更新') : null,
           h('span', { className: 'sbk-spacer' }),
           h(Btn, { size: 'sm', variant: 'ghost', onClick: build, disabled: busy }, '✧ 自动整理'),
@@ -1194,29 +1281,32 @@ window.__ModuleLoader__.load({
               `来源：世界观 ${status?.counts?.world ?? 0} 条 · 角色 ${status?.counts?.character ?? 0} 条；`
               + `现有事件 ${status?.counts?.events ?? 0} 条（AI ${status?.counts?.aiEvents ?? 0} / 手动 ${status?.counts?.manualEvents ?? 0}）。`
               + (status?.syncedAt ? ` 上次整理 ${new Date(status.syncedAt).toLocaleString('zh-CN', { hour12: false })}。` : ' 还没有自动生成过。')),
-            h('div', { className: 'sbk-hint' }, '生成的事件只补不删；手动条目与对话记忆不会被覆盖。'))
+            h('div', { className: 'sbk-hint' }, '生成时会自动标注「过去 / 现在 / 未来」并排序；手动条目与对话记忆不会被覆盖。'))
           : null,
         sorted.length === 0
           ? h('div', { className: 'sbk-empty', style: { padding: '36px 12px' } },
             h('div', { className: 'sbk-empty-glyph' }, '⟳'),
             h('b', null, '时间线还是空的'),
-            h('div', { className: 'sbk-hint', style: { maxWidth: 360 } }, '可以手动新增，也可以切到「自动生成」让 AI 读取世界观与角色提取事件。'),
+            h('div', { className: 'sbk-hint', style: { maxWidth: 360 } }, '先设置「现在」，再手动新增，或切到「自动生成」让 AI 读取世界观与角色提取事件。'),
             h('div', { className: 'sbk-inline' },
               h(Btn, { variant: 'primary', size: 'sm', onClick: startNew }, '＋ 新增条目'),
               h(Btn, { size: 'sm', variant: 'ghost', onClick: build, disabled: busy }, '✧ 自动整理')))
           : h('div', { className: 'sbk-axis' },
-            sorted.map((entry, index) => h('div', { key: entry.id, className: 'sbk-axis-item', 'data-side': index % 2 === 0 ? 'left' : 'right' },
-              h('span', { className: 'sbk-axis-dot' }),
-              h('button', { type: 'button', className: 'sbk-axis-card', onClick: () => openDetail(entry) },
-                h('div', { className: 'sbk-axis-time' }, entry.at || '未标注时间'),
-                h('div', { className: 'sbk-axis-title' }, entry.title || '未命名条目'),
-                h('div', { className: 'sbk-axis-snippet' }, String(entry.content || '').replace(/\s+/g, ' ') || '（空）'),
-                h('div', { className: 'sbk-axis-tags' },
-                  entry.source === 'ai' ? h('span', { className: 'sbk-kw' }, 'AI 提取') : null,
-                  entry.kind === 'memory' ? h('span', { className: 'sbk-kw' }, '对话记忆') : null,
-                  entry.kind === 'chapter' ? h('span', { className: 'sbk-kw' }, '章节梗概') : null,
-                  entry.conversationId ? h('span', { className: 'sbk-kw sbk-kw--pin' }, '本对话') : null))))),
-
+            groups.map((group) => group.items.length === 0 ? null : h('div', { key: group.key, className: 'sbk-axis-group', 'data-phase': group.key },
+              h('div', { className: 'sbk-axis-phase' },
+                h('span', null, group.label),
+                h('span', { className: 'sbk-hint' }, group.hint)),
+              group.items.map((entry, index) => h('div', { key: entry.id, className: 'sbk-axis-item', 'data-side': index % 2 === 0 ? 'left' : 'right' },
+                h('span', { className: 'sbk-axis-dot' }),
+                h('button', { type: 'button', className: 'sbk-axis-card', onClick: () => openDetail(entry) },
+                  h('div', { className: 'sbk-axis-time' }, entry.at || '未标注时间'),
+                  h('div', { className: 'sbk-axis-title' }, entry.title || '未命名条目'),
+                  h('div', { className: 'sbk-axis-snippet' }, String(entry.content || '').replace(/\s+/g, ' ') || '（空）'),
+                  h('div', { className: 'sbk-axis-tags' },
+                    entry.source === 'ai' ? h('span', { className: 'sbk-kw' }, 'AI 提取') : null,
+                    entry.kind === 'memory' ? h('span', { className: 'sbk-kw' }, '对话记忆') : null,
+                    entry.kind === 'chapter' ? h('span', { className: 'sbk-kw' }, '章节梗概') : null,
+                    entry.conversationId ? h('span', { className: 'sbk-kw sbk-kw--pin' }, '本对话') : null))))))),
         sheetBody);
     }
 
