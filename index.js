@@ -15,7 +15,7 @@ import { homedir } from 'node:os';
 export const inject = ['webServer'];
 
 const API_PREFIX = '/storybook';
-const BUILD = '1.3.0';
+const BUILD = '1.3.1';
 const MODULE_KEYS = ['basic', 'world', 'character', 'timeline', 'craft'];
 const MODULE_LABEL = {
   basic: '基础设定',

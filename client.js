@@ -878,13 +878,28 @@ window.__ModuleLoader__.load({
 
     function pressProps(openMenu, items) {
       let timer = null;
+      let suppressUntil = 0;
+      const fire = (event) => {
+        if (event?.stopPropagation) event.stopPropagation();
+        suppressUntil = Date.now() + 900;
+        openMenu(event, items);
+      };
       const start = (event) => {
         if (event?.button && event.button !== 0) return;
-        timer = setTimeout(() => { timer = null; openMenu(event, items); }, 480);
+        suppressUntil = 0;
+        timer = setTimeout(() => { timer = null; fire(event); }, 480);
       };
       const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
       return {
-        onContextMenu: (event) => { event.preventDefault(); openMenu(event, items); },
+        // 长按弹出的菜单会抢走随后的 click：这里在捕获阶段吞掉它，避免“长按=进入对话”
+        onClickCapture: (event) => {
+          if (Date.now() < suppressUntil) {
+            if (event.preventDefault) event.preventDefault();
+            if (event.stopPropagation) event.stopPropagation();
+            suppressUntil = 0;
+          }
+        },
+        onContextMenu: (event) => { event.preventDefault(); fire(event); },
         onTouchStart: start,
         onTouchEnd: cancel,
         onTouchMove: cancel,
@@ -1083,7 +1098,7 @@ window.__ModuleLoader__.load({
         h('div', {
           className: 'sbk-chat-scroll',
           ref: scrollRef,
-          onContextMenu: (event) => { event.preventDefault(); openMenu(event, chatMenuItems); },
+          ...pressProps(openMenu, chatMenuItems),
         },
           messages.length === 0 && !streaming
             ? h('div', { className: 'sbk-empty' },
@@ -1225,6 +1240,7 @@ window.__ModuleLoader__.load({
       const openMenu = useCallback((event, items) => {
         const point = event?.changedTouches?.[0] || event?.touches?.[0] || event;
         setMenu({
+          at: Date.now(),
           x: Math.max(8, Math.min(point?.clientX ?? 120, (window.innerWidth || 360) - 210)),
           y: Math.max(8, Math.min(point?.clientY ?? 120, (window.innerHeight || 640) - 60 - (items.length * 40))),
           items,
@@ -1445,9 +1461,19 @@ window.__ModuleLoader__.load({
         menu
           ? h('div', {
             className: 'sbk-menu-mask',
-            onMouseDown: () => setMenu(null),
+            onMouseDown: (event) => {
+              if (event.target === event.currentTarget && Date.now() - (menu.at || 0) > 260) setMenu(null);
+            },
+            onTouchStart: (event) => {
+              if (event.target === event.currentTarget && Date.now() - (menu.at || 0) > 260) setMenu(null);
+            },
             onContextMenu: (event) => { event.preventDefault(); setMenu(null); },
-          }, h('div', { className: 'sbk-menu', style: { left: menu.x, top: menu.y } },
+          }, h('div', {
+            className: 'sbk-menu',
+            style: { left: menu.x, top: menu.y },
+            onMouseDown: (event) => event.stopPropagation(),
+            onTouchStart: (event) => event.stopPropagation(),
+          },
             menu.items.map((item) => h('button', {
               key: item.label,
               type: 'button',

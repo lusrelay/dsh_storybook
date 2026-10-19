@@ -29,7 +29,7 @@ globalThis.window = { innerWidth: 420, innerHeight: 900, __ModuleLoader__: { loa
 let source = await readFile(new URL('../client.js', import.meta.url), 'utf8');
 source = source.replace(
   "    return {\n      inject: ['slots', 'locale'],",
-  "    globalThis.__SBK__ = { StorybookPage, ModulePanel, CraftPanel, ChatPanel, ConversationList, ModeStart, Reply, StatusGrid, Hints, ChatHeader };\n    return {\n      inject: ['slots', 'locale'],",
+  "    globalThis.__SBK__ = { StorybookPage, ModulePanel, CraftPanel, ChatPanel, ConversationList, ModeStart, Reply, StatusGrid, Hints, ChatHeader, pressProps };\n    return {\n      inject: ['slots', 'locale'],",
 );
 if (!source.includes('__SBK__')) throw new Error('注入测试钩子失败');
 
@@ -197,6 +197,24 @@ check('本对话记忆可见', out.flat.includes('第1章 雨夜'));
 check('别的对话记忆被过滤', !out.flat.includes('别的对话的记忆'));
 check('共享事件可见', out.flat.includes('旧王城陷落'));
 check('有范围切换', out.flat.includes('仅本对话'));
+
+console.log('\n[8] 长按菜单的点击抑制');
+let opened = null;
+const props = S.pressProps((event, items) => { opened = items; }, ['A', 'B']);
+props.onMouseDown({ button: 0 });
+await new Promise((resolve) => setTimeout(resolve, 620));
+check('长按 480ms 后弹出菜单', Array.isArray(opened) && opened.length === 2, opened);
+let prevented = false;
+let stopped = false;
+props.onClickCapture({ preventDefault: () => { prevented = true; }, stopPropagation: () => { stopped = true; } });
+check('长按后吞掉紧随的 click（不会误进对话）', prevented && stopped);
+let quickPrevented = false;
+const quick = S.pressProps(() => { opened = 'wrong'; }, ['X']);
+quick.onMouseDown({ button: 0 });
+await new Promise((resolve) => setTimeout(resolve, 80));
+quick.onMouseUp();
+quick.onClickCapture({ preventDefault: () => { quickPrevented = true; }, stopPropagation: () => {} });
+check('短按不拦截 click', quickPrevented === false);
 
 console.log(failures === 0 ? '\n全部通过 ✓' : `\n失败 ${failures} 项 ✗`);
 process.exit(failures === 0 ? 0 : 1);
